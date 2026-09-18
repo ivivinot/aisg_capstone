@@ -21,15 +21,15 @@ in the docstrings point at the analysis that motivated the choice.
     exp(E[log y]) under-states E[y] for a         LogTargetTransformer with Duan's
     skewed target (8)                             smearing estimator
 
-Every default here was chosen by measurement, not by reflex. Running ``main.py``
-with one flag changed gives (5-fold CV R2 on log(value), Ridge alpha=0.01, the
-preprocessor refitted inside each fold):
+Every default here was chosen by measurement, not by reflex. Changing one knob at
+a time gives (mean 5-fold CV R2 on log(value), Ridge alpha=0.01, this preprocessor
+refitted inside each fold; readme.md 16.2):
 
-    --no-log                      0.44211   without the log transform, nothing works
-    --poly-degree 1               0.98661   log-linear; matches EDA 7's 0.9868
-    defaults (degree 3)           0.99938   the representation the EDA selected
-    --recency-policy clip         0.99579   repairing the 52 impossible rows hurts
-    --outlier-quantiles .001 .999 0.99282   winsorizing the tail hurts more
+    --no-log                      0.47884   without the log transform, nothing works
+    --poly-degree 1               0.98642   log-linear; matches EDA 7's 0.9868
+    defaults (degree 3)           0.99936   the representation the EDA selected
+    --outlier-quantiles .001 .999 0.99732   winsorizing the tail costs accuracy
+    --recency-policy clip         0.99579   repairing the 52 impossible rows costs more
 
 The first two lines are why the log transform is the centre of this module. The
 last two are why its "cleaning" is deliberately conservative: EDA 7 established
@@ -63,16 +63,18 @@ from __future__ import annotations
 
 import json
 import logging
+import tempfile
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
-from sklearn.base import BaseEstimator, TransformerMixin
+from sklearn.base import BaseEstimator, TransformerMixin, clone
 from sklearn.impute import KNNImputer
-from sklearn.model_selection import train_test_split
+from sklearn.linear_model import Ridge
+from sklearn.model_selection import KFold, cross_validate, train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 
@@ -96,6 +98,16 @@ __all__ = [
     "stratified_split",
     "get_logger",
     "quiet",
+    # -- tests and validation -- #
+    "Check",
+    "check_output_contract",
+    "check_transformer_behaviour",
+    "check_statistics",
+    "summarise",
+    "EXPECTED_FEATURES_BY_DEGREE",
+    "EXPECTED_CV_R2",
+    "CV_R2_TOLERANCE",
+    "SHUFFLE_R2_CEILING",
 ]
 
 logger = logging.getLogger("capstone.preprocessing")
@@ -1140,3 +1152,387 @@ def _invalid_recency_mask(X: pd.DataFrame) -> pd.Series:
 def _check_fitted(obj) -> None:
     if not hasattr(obj, "pipeline_"):
         raise RuntimeError(f"{type(obj).__name__} is not fitted; call fit() first.")
+
+
+# --------------------------------------------------------------------------- #
+# Tests and validation
+# --------------------------------------------------------------------------- #
+#
+# main.py runs every check below on every run, so the checks travel with the
+# data instead of living in a suite someone remembers to invoke, and train.py
+# treats them as a gate: a failed check stops the run before a model is fitted.
+# tests/ is a thin pytest wrapper around the same functions.
+#
+# Three groups, in increasing cost and decreasing obviousness:
+#
+#   A. Output contract        the processed splits are usable and leakage-free:
+#      (check_output_contract) same columns, finite values, train standardised,
+#                              test NOT re-standardised.
+#
+#   B. Transformer behaviour  the properties that are easy to break in a
+#      (check_transformer_    refactor and expensive to notice -- above all,
+#       behaviour)            transform() of one row must equal that row inside
+#                             a batch, or predict.py disagrees with the
+#                             evaluation and nothing reveals it. Then: order,
+#                             index and column invariance; unseen categories,
+#                             missing values, non-positive values and absurd
+#                             magnitudes degrading into something finite; and
+#                             the save/load and clone/set_params round-trips
+#                             that src/models.py tunes through.
+#
+#   C. Statistical validation is this still the pipeline the EDA measured? The
+#      (check_statistics)     feature count per degree, the CV R2 the
+#                             representation earns, and a label-shuffle test:
+#                             refit on a permuted target, where the score must
+#                             collapse. A preprocessor that had leaked anything
+#                             about y would still score above chance there.
+#
+# Every function returns Check records rather than raising, so one run reports
+# all failures instead of stopping at the first.
+
+#: Feature count of the default representation at each polynomial degree.
+#: 5 logged numerics + loyalty + flag_invalid_recency = 7 first-order terms,
+#: then C(7+d, d) - 1 with nothing constant to prune.
+EXPECTED_FEATURES_BY_DEGREE = {1: 7, 2: 35, 3: 119}
+
+#: Mean 5-fold CV R2 on log(value) for Ridge(alpha=0.01) on the default
+#: representation (readme.md 16.2). A refactor that moves this has changed the
+#: representation, whether or not it meant to.
+EXPECTED_CV_R2 = 0.99936
+CV_R2_TOLERANCE = 5e-4
+
+#: With a shuffled target there is nothing left to predict, so anything above
+#: this means information about y reached the features.
+SHUFFLE_R2_CEILING = 0.05
+
+
+@dataclass
+class Check:
+    """One assertion, its outcome, and enough detail to debug a failure."""
+
+    name: str
+    status: str                      # PASS | FAIL | SKIP
+    detail: str = ""
+    group: str = ""
+
+    @property
+    def failed(self) -> bool:
+        return self.status == "FAIL"
+
+    def as_dict(self) -> dict:
+        return {"group": self.group, "name": self.name,
+                "status": self.status, "detail": self.detail}
+
+
+@dataclass
+class _Recorder:
+    """Collects checks so a run reports every failure, not just the first."""
+
+    group: str
+    checks: List[Check] = field(default_factory=list)
+
+    def record(self, name: str, ok: bool, detail: str = "") -> None:
+        self.checks.append(Check(name, "PASS" if ok else "FAIL", detail, self.group))
+
+    def skip(self, name: str, reason: str) -> None:
+        self.checks.append(Check(name, "SKIP", reason, self.group))
+
+    def guard(self, name: str, fn: Callable[[], tuple], detail: str = "") -> None:
+        """Run a check that may raise; an exception is a failure, not a crash."""
+        try:
+            ok, got = fn()
+        except Exception as exc:                      # noqa: BLE001 - reported, not swallowed
+            self.checks.append(Check(name, "FAIL", f"raised {type(exc).__name__}: {exc}",
+                                     self.group))
+            return
+        self.record(name, ok, got or detail)
+
+
+# --------------------------------------------------------------------------- #
+# A. Output contract
+# --------------------------------------------------------------------------- #
+
+
+def check_output_contract(
+    X_train: pd.DataFrame,
+    X_test: pd.DataFrame,
+    y_train: pd.Series,
+    y_test: pd.Series,
+    prep: CLVPreprocessor,
+) -> List[Check]:
+    """The processed splits must be usable by a model and free of leakage."""
+    rec = _Recorder("output contract")
+
+    rec.record("column parity between splits",
+               list(X_train.columns) == list(X_test.columns),
+               f"{X_train.shape[1]} features")
+    rec.record("row parity with targets",
+               len(X_train) == len(y_train) and len(X_test) == len(y_test),
+               f"train {len(X_train)}, test {len(X_test)}")
+    rec.record("no missing values after imputation",
+               not X_train.isna().any().any() and not X_test.isna().any().any())
+    rec.record("all values finite (no -inf from log)",
+               bool(np.isfinite(X_train.to_numpy()).all()
+                    and np.isfinite(X_test.to_numpy()).all()))
+    n_constant = int((X_train.std(ddof=0) == 0).sum())
+    rec.record("no constant columns", n_constant == 0, f"{n_constant} constant")
+
+    if prep.config_.scale:
+        # The scaler is fitted on train, so train is standardised exactly and test
+        # is merely close. A test mean of exactly 0 would mean the scaler saw it.
+        rec.record("train features standardised",
+                   bool(np.allclose(X_train.mean(), 0, atol=1e-8)
+                        and np.allclose(X_train.std(ddof=0), 1, atol=1e-8)))
+        rec.record("test features not re-standardised (no leakage)",
+                   not np.allclose(X_test.mean(), 0, atol=1e-8),
+                   f"test mean in [{X_test.mean().min():+.3f}, {X_test.mean().max():+.3f}]")
+    else:
+        rec.skip("train features standardised", "scaling disabled")
+        rec.skip("test features not re-standardised (no leakage)", "scaling disabled")
+
+    rec.record("target strictly positive (log is defined)",
+               bool((y_train > 0).all() and (y_test > 0).all()))
+    return rec.checks
+
+
+# --------------------------------------------------------------------------- #
+# B. Transformer behaviour
+# --------------------------------------------------------------------------- #
+
+
+def check_transformer_behaviour(
+    prep: CLVPreprocessor,
+    X_train_raw: pd.DataFrame,
+    X_test_raw: pd.DataFrame,
+    sample: int = 25,
+    seed: int = 42,
+) -> List[Check]:
+    """Invariances and edge cases, on raw rows the preprocessor has not seen."""
+    rec = _Recorder("transformer behaviour")
+    rng = np.random.default_rng(seed)
+    config = prep.config_
+    rows = X_test_raw.head(sample)
+    baseline = prep.transform(rows)
+
+    # 1. One row at a time must equal the batch, or predict.py lies. -------- #
+    def single_row():
+        singles = pd.concat([prep.transform(rows.iloc[[i]]) for i in range(len(rows))])
+        return bool(np.allclose(singles.to_numpy(), baseline.to_numpy())), \
+            f"{len(rows)} rows scored individually"
+
+    rec.guard("single row == batch", single_row)
+
+    # 2-4. Order, index and column order must not matter. ------------------- #
+    def row_order():
+        order = rng.permutation(len(rows))
+        shuffled = prep.transform(rows.iloc[order])
+        return bool(np.allclose(shuffled.to_numpy(), baseline.to_numpy()[order])), ""
+
+    rec.guard("row order permutes output identically", row_order)
+
+    def index_kept():
+        odd = rows.copy()
+        odd.index = [f"cust-{i}" for i in range(len(odd))]
+        return list(prep.transform(odd).index) == list(odd.index), "non-default index"
+
+    rec.guard("input index is preserved", index_kept)
+
+    def column_order():
+        reordered = rows[list(rows.columns)[::-1]]
+        return bool(np.allclose(prep.transform(reordered).to_numpy(),
+                                baseline.to_numpy())), "columns reversed"
+
+    rec.guard("column order does not matter", column_order)
+
+    # 5-6. The column contract. --------------------------------------------- #
+    def extra_column():
+        noisy = rows.assign(campaign_id="spring", junk=rng.normal(size=len(rows)))
+        return bool(np.allclose(prep.transform(noisy).to_numpy(), baseline.to_numpy())), \
+            "2 unknown columns ignored"
+
+    rec.guard("unknown columns are ignored", extra_column)
+
+    def missing_column():
+        dropped = list(config.numeric_features)[0]
+        try:
+            prep.transform(rows.drop(columns=[dropped]))
+        except ValueError as exc:
+            return dropped in str(exc), f"ValueError names {dropped}"
+        return False, "no ValueError raised"
+
+    rec.guard("a missing feature raises ValueError", missing_column)
+
+    # 7-10. Dirty data degrades, it does not explode. ------------------------ #
+    def unseen_category():
+        categorical = list(config.categorical_map)[0]
+        odd = rows.copy()
+        odd.loc[odd.index[0], categorical] = "Platinum"
+        # quiet(ERROR), not quiet(): the encoder's warning is expected here, and
+        # the check is that the row survives it.
+        with quiet(logging.ERROR):
+            out = prep.transform(odd)
+        return bool(np.isfinite(out.to_numpy()).all()), "unseen category -> finite output"
+
+    rec.guard("unseen category degrades to a finite row", unseen_category)
+
+    def injected_missing():
+        holey = rows.copy()
+        for i, column in enumerate(config.numeric_features):
+            holey.loc[holey.index[i % len(holey)], column] = np.nan
+        out = prep.transform(holey)
+        return (bool(np.isfinite(out.to_numpy()).all())
+                and out.shape == baseline.shape), "NaNs filled with training medians"
+
+    rec.guard("missing values at transform time are imputed", injected_missing)
+
+    def non_positive():
+        floored = rows.copy()
+        column = list(config.numeric_features)[0]
+        floored.loc[floored.index[0], column] = 0.0
+        floored.loc[floored.index[1], column] = -5.0
+        out = prep.transform(floored)
+        return bool(np.isfinite(out.to_numpy()).all()), \
+            f"0 and -5 in {column} stay finite through log()"
+
+    rec.guard("non-positive values survive the log floor", non_positive)
+
+    def clipping():
+        if config.outlier_strategy != "clip":
+            raise _Skip("outlier strategy is not 'clip'")
+        column = list(config.numeric_features)[0]
+        upper = prep.quality_report()["outlier_bounds"][column][1]
+        absurd, at_bound = rows.iloc[[0]].copy(), rows.iloc[[0]].copy()
+        absurd[column], at_bound[column] = 1e9, upper
+        return bool(np.allclose(prep.transform(absurd).to_numpy(),
+                                prep.transform(at_bound).to_numpy())), \
+            f"{column} = 1e9 lands on the fitted bound {upper:,.1f}"
+
+    _guard_skippable(rec, "extreme values are clipped to the fitted bound", clipping)
+
+    # 11-12. Round-trips the rest of the project depends on. ----------------- #
+    def save_load():
+        with tempfile.TemporaryDirectory() as tmp:
+            path = prep.save(Path(tmp) / "prep.joblib")
+            reloaded = CLVPreprocessor.load(path)
+            return bool(np.allclose(reloaded.transform(rows).to_numpy(),
+                                    baseline.to_numpy())), "joblib round-trip"
+
+    rec.guard("save/load reproduces the transform", save_load)
+
+    def clone_roundtrip():
+        # src/models.py tunes prep__config through clone/set_params; if get_params
+        # does not round-trip, the search silently optimises the wrong thing.
+        twin = clone(prep)
+        twin.set_params(config=replace(config))
+        with quiet():
+            twin.fit(X_train_raw)
+        return bool(np.allclose(twin.transform(rows).to_numpy(), baseline.to_numpy())), \
+            "clone + set_params(config=...)"
+
+    rec.guard("clone/set_params rebuilds the same pipeline", clone_roundtrip)
+
+    return rec.checks
+
+
+class _Skip(Exception):
+    """Raised inside a check body when the check does not apply to this config."""
+
+
+def _guard_skippable(rec: _Recorder, name: str, fn: Callable[[], tuple]) -> None:
+    try:
+        ok, detail = fn()
+    except _Skip as reason:
+        rec.skip(name, str(reason))
+    except Exception as exc:                          # noqa: BLE001 - reported, not swallowed
+        rec.checks.append(Check(name, "FAIL", f"raised {type(exc).__name__}: {exc}", rec.group))
+    else:
+        rec.record(name, ok, detail)
+
+
+# --------------------------------------------------------------------------- #
+# C. Statistical validation
+# --------------------------------------------------------------------------- #
+
+
+def check_statistics(
+    train_raw: pd.DataFrame,
+    config: Optional[PreprocessConfig] = None,
+    cv_folds: int = 5,
+    seed: int = 42,
+    degrees: Sequence[int] = (1, 2, 3),
+) -> List[Check]:
+    """Does the pipeline still earn the numbers the EDA and readme.md quote?"""
+    rec = _Recorder("statistical validation")
+    config = config or PreprocessConfig()
+    X = train_raw.drop(columns=[config.target])
+    y_log = np.log(train_raw[config.target].to_numpy())
+    cv = KFold(n_splits=cv_folds, shuffle=True, random_state=seed)
+    default_shape = _is_default_representation(config)
+
+    # 1. Feature count per degree -- the representation's fingerprint. ------- #
+    for degree in degrees:
+        expected = EXPECTED_FEATURES_BY_DEGREE.get(degree)
+        if expected is None or not default_shape:
+            rec.skip(f"degree {degree} -> {expected} features",
+                     "non-default representation" if expected else "no reference count")
+            continue
+        try:
+            with quiet():
+                fitted = CLVPreprocessor(replace(config, poly_degree=degree)).fit(X)
+            rec.record(f"degree {degree} -> {expected} features",
+                       fitted.n_features_out_ == expected,
+                       f"got {fitted.n_features_out_}")
+        except Exception as exc:                      # noqa: BLE001
+            rec.record(f"degree {degree} -> {expected} features", False,
+                       f"raised {type(exc).__name__}: {exc}")
+
+    pipe = Pipeline([("prep", CLVPreprocessor(config)), ("ridge", Ridge(alpha=0.01))])
+
+    # 2. The score the representation is supposed to earn. ------------------- #
+    with quiet():
+        score = float(cross_validate(pipe, X, y_log, cv=cv, scoring="r2")["test_score"].mean())
+    if default_shape and config.poly_degree == 3:
+        rec.record(f"CV R2 on log(value) = {EXPECTED_CV_R2:.5f} +/- {CV_R2_TOLERANCE:g}",
+                   abs(score - EXPECTED_CV_R2) <= CV_R2_TOLERANCE, f"got {score:.5f}")
+    else:
+        rec.skip(f"CV R2 on log(value) = {EXPECTED_CV_R2:.5f}",
+                 f"non-default representation scored {score:.5f}")
+
+    # 3. The leakage test that matters: shuffle y, the score must collapse. --- #
+    shuffled = np.random.default_rng(seed).permutation(y_log)
+    with quiet():
+        noise = float(cross_validate(pipe, X, shuffled, cv=cv,
+                                     scoring="r2")["test_score"].mean())
+    rec.record(f"shuffled-target CV R2 < {SHUFFLE_R2_CEILING}",
+               noise < SHUFFLE_R2_CEILING,
+               f"got {noise:+.5f} -- above zero would mean y reached the features")
+
+    return rec.checks
+
+
+def _is_default_representation(config: PreprocessConfig) -> bool:
+    """Are the knobs that decide the feature space at their reference values?"""
+    reference = PreprocessConfig()
+    return all(getattr(config, knob) == getattr(reference, knob) for knob in (
+        "numeric_features", "log_transform", "scale", "drop_constant_features",
+        "add_derived_features", "add_quality_flags", "add_missing_indicators",
+        "recency_policy", "outlier_strategy", "outlier_quantiles", "outlier_margin",
+        "numeric_impute", "test_size", "n_strata", "random_state",
+    ))
+
+
+# --------------------------------------------------------------------------- #
+# Reporting
+# --------------------------------------------------------------------------- #
+
+
+def summarise(checks: Sequence[Check]) -> dict:
+    """Counts by status, plus the names of anything that failed."""
+    return {
+        "total": len(checks),
+        "passed": sum(c.status == "PASS" for c in checks),
+        "failed": sum(c.status == "FAIL" for c in checks),
+        "skipped": sum(c.status == "SKIP" for c in checks),
+        "failures": [c.name for c in checks if c.failed],
+        "checks": [c.as_dict() for c in checks],
+    }

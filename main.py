@@ -1,10 +1,11 @@
-"""Entry point: run the CLV preprocessing pipeline end to end.
+"""Entry point: process the data, then test and validate what came out.
 
     python main.py                          # defaults, reproduces the EDA set-up
     python main.py --poly-degree 1          # plain log-linear representation
     python main.py --outlier-strategy flag  # keep raw values, append 0/1 columns
     python main.py --drop-invalid-recency   # remove the 52 impossible rows instead
-    python main.py --no-validate            # skip the smoke test
+    python main.py --no-stat-checks         # skip the slow cross-validated checks
+    python main.py --no-validate            # process only, check nothing
 
 What it does, in order:
 
@@ -13,12 +14,18 @@ What it does, in order:
     3. row-level filtering (off by default; see src/preprocessing.filter_rows)
     4. split 80/20, stratified on value deciles (EDA 8)
     5. fit the preprocessor on the TRAINING split only, transform both splits
-    6. assert the outputs are usable and leakage-free
-    7. optional smoke test: Ridge on the processed features, 5-fold CV
-    8. write the processed data, the fitted pipeline and the reports to outputs/
+    6. validate the output contract: usable, finite, leakage-free
+    7. test the transformer itself: single row == batch, order and index
+       invariance, dirty-data edge cases, save/load and clone round-trips
+    8. validate statistically: feature count per degree, the CV R2 the EDA
+       measured, and a label-shuffle test whose score must collapse to zero
+    9. write the processed data, the fitted pipeline and the reports to outputs/
 
-The test split is transformed but must not be looked at again until a final
-model is evaluated once (EDA 8).
+Checks are collected, not raised, so one run reports every failure -- and the
+process exits non-zero if anything failed, which makes this usable as a gate.
+
+The test split is transformed but must not be looked at again until a final model
+is evaluated once (EDA 8). Modelling lives in ``train.py``.
 """
 
 from __future__ import annotations
@@ -28,24 +35,26 @@ import json
 import sys
 from dataclasses import asdict
 from pathlib import Path
-
-import numpy as np
-import pandas as pd
+from typing import List
 
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from src.preprocessing import (  # noqa: E402
+    Check,
     CLVPreprocessor,
     LogTargetTransformer,
     PreprocessConfig,
     audit_dataset,
+    check_output_contract,
+    check_statistics,
+    check_transformer_behaviour,
     filter_rows,
     get_logger,
     load_raw,
-    quiet,
     stratified_split,
+    summarise,
 )
 
 log = get_logger("capstone")
@@ -56,11 +65,8 @@ log = get_logger("capstone")
 # --------------------------------------------------------------------------- #
 
 
-def parse_args(argv=None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(
-        description="Preprocess the capstone CLV dataset.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
+def add_preprocessing_arguments(p: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """The data-side flags. ``train.py`` reuses these so the two cannot drift."""
     p.add_argument("--data", default=str(ROOT / "data" / "synthetic_data_126.csv"),
                    help="raw CSV to preprocess")
     p.add_argument("--outdir", default=str(ROOT / "outputs"),
@@ -87,7 +93,7 @@ def parse_args(argv=None) -> argparse.Namespace:
                    help="clip bounds the feature space; the heavy tail is never deleted")
     g.add_argument("--outlier-quantiles", type=float, nargs=2, default=(0.0, 1.0),
                    metavar=("LO", "HI"),
-                   help="training quantiles used as the bounds; 0 1 means min/max, so no "
+                   help="the training quantiles used as bounds; 0 1 means min/max, so no "
                         "training row moves and only unseen data is held in range")
     g.add_argument("--outlier-margin", type=float, default=0.5,
                    help="widen those bounds by this fraction, so the clip bites only on values "
@@ -105,8 +111,31 @@ def parse_args(argv=None) -> argparse.Namespace:
     g.add_argument("--test-size", type=float, default=0.2)
     g.add_argument("--n-strata", type=int, default=10, help="value bins used for stratification")
     g.add_argument("--seed", type=int, default=42)
-    g.add_argument("--no-validate", action="store_true", help="skip the Ridge smoke test")
     g.add_argument("--no-save", action="store_true", help="run everything but write nothing")
+    return p
+
+
+def add_validation_arguments(p: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """The check-side flags, so ``train.py`` can run the same gate before modelling."""
+    g = p.add_argument_group("tests and validation")
+    g.add_argument("--no-validate", action="store_true",
+                   help="skip every check: process the data and write it out")
+    g.add_argument("--no-tests", action="store_true",
+                   help="skip the transformer behaviour tests (stage 5)")
+    g.add_argument("--no-stat-checks", action="store_true",
+                   help="skip the cross-validated checks (stage 6), the slowest part")
+    g.add_argument("--cv-folds", type=int, default=5,
+                   help="folds used by the statistical checks")
+    return p
+
+
+def parse_args(argv=None) -> argparse.Namespace:
+    p = argparse.ArgumentParser(
+        description="Preprocess the capstone CLV dataset, then test and validate the result.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    add_preprocessing_arguments(p)
+    add_validation_arguments(p)
     return p.parse_args(argv)
 
 
@@ -130,16 +159,20 @@ def config_from_args(args: argparse.Namespace) -> PreprocessConfig:
     )
 
 
+def banner(number: int, title: str) -> None:
+    print("\n" + "=" * 78)
+    print(f"{number}. {title}")
+    print("=" * 78)
+
+
 # --------------------------------------------------------------------------- #
-# Reporting and checks
+# Reporting
 # --------------------------------------------------------------------------- #
 
 
 def print_audit(report: dict) -> None:
     """Show the quality findings that the pipeline's strategies are answering."""
-    print("\n" + "=" * 78)
-    print("1. DATA AUDIT -- what the raw file actually contains")
-    print("=" * 78)
+    banner(1, "DATA AUDIT -- what the raw file actually contains")
     print(f"  rows x columns          {report['rows']} x {report['columns']}")
     print(f"  duplicate rows          {report['duplicate_rows']}")
     print(f"  missing cells           {report['missing_cells_total']}"
@@ -172,146 +205,31 @@ def print_audit(report: dict) -> None:
         print(f"    {col:32s} {skew:+.2f}")
 
 
-def validate_outputs(
-    X_train: pd.DataFrame,
-    X_test: pd.DataFrame,
-    y_train: pd.Series,
-    y_test: pd.Series,
-    prep: CLVPreprocessor,
-) -> dict:
-    """Fail loudly on anything that would quietly break the modelling step."""
-    checks: dict = {}
-
-    def check(name: str, ok: bool, detail: str = "") -> None:
-        checks[name] = bool(ok)
-        status = "PASS" if ok else "FAIL"
-        print(f"  [{status}] {name}{('  -- ' + detail) if detail else ''}")
-        if not ok:
-            raise AssertionError(f"pipeline validation failed: {name} {detail}")
-
-    print("\n" + "=" * 78)
-    print("4. VALIDATION -- the pipeline output must be usable and leakage-free")
-    print("=" * 78)
-
-    check("column parity between splits", list(X_train.columns) == list(X_test.columns),
-          f"{X_train.shape[1]} features")
-    check("row parity with targets",
-          len(X_train) == len(y_train) and len(X_test) == len(y_test),
-          f"train {len(X_train)}, test {len(X_test)}")
-    check("no missing values after imputation",
-          not X_train.isna().any().any() and not X_test.isna().any().any())
-    check("all values finite (no -inf from log)",
-          bool(np.isfinite(X_train.to_numpy()).all() and np.isfinite(X_test.to_numpy()).all()))
-    check("no constant columns", int((X_train.std(ddof=0) == 0).sum()) == 0,
-          f"{int((X_train.std(ddof=0) == 0).sum())} constant")
-
-    if prep.config_.scale:
-        # The scaler is fitted on train, so train is standardised exactly and test
-        # is merely close. A test mean far from 0 would mean the splits differ.
-        check("train features standardised",
-              bool(np.allclose(X_train.mean(), 0, atol=1e-8)
-                   and np.allclose(X_train.std(ddof=0), 1, atol=1e-8)))
-        check("test features not re-standardised (no leakage)",
-              not np.allclose(X_test.mean(), 0, atol=1e-8),
-              f"test mean in [{X_test.mean().min():+.3f}, {X_test.mean().max():+.3f}]")
-
-    check("target strictly positive (log is defined)",
-          bool((y_train > 0).all() and (y_test > 0).all()))
-    return checks
-
-
-def smoke_test(train_raw: pd.DataFrame, config: PreprocessConfig) -> dict:
-    """Cross-validate a Ridge on top of the preprocessor, inside the folds.
-
-    This is a pipeline check, not a modelling result. Because the preprocessor is
-    a real sklearn transformer, every fold refits the imputation fills, the clip
-    bounds and the scaler -- so the score is honest and any leakage would show up
-    as a gap against the EDA's numbers. Degree 3 should land near the EDA's
-    CV R2 of ~0.9998 on log(value) (EDA 10).
-    """
-    from sklearn.linear_model import Ridge
-    from sklearn.model_selection import KFold, cross_val_predict
-    from sklearn.pipeline import Pipeline
-
-    from src.preprocessing import TARGET
-
-    X = train_raw.drop(columns=[TARGET])
-    y_log = np.log(train_raw[TARGET].to_numpy())
-
-    pipe = Pipeline([("prep", CLVPreprocessor(config)), ("ridge", Ridge(alpha=0.01))])
-    cv = KFold(n_splits=5, shuffle=True, random_state=config.random_state)
-    with quiet():  # five folds x a full refit would otherwise flood the report
-        oof_log = cross_val_predict(pipe, X, y_log, cv=cv)
-
-    residual = y_log - oof_log
-    ss_res = float(np.sum(residual ** 2))
-    ss_tot = float(np.sum((y_log - y_log.mean()) ** 2))
-    r2_log = 1 - ss_res / ss_tot
-
-    # Duan's smearing on the out-of-fold residuals, then back to dollars (EDA 8).
-    target_tf = LogTargetTransformer().fit(train_raw[TARGET])
-    target_tf.fit_smearing(residual)
-    pred_raw = target_tf.inverse_transform(oof_log)
-    actual = train_raw[TARGET].to_numpy()
-
-    spearman = float(pd.Series(pred_raw).corr(pd.Series(actual), method="spearman"))
-    mae = float(np.mean(np.abs(pred_raw - actual)))
-
-    result = {
-        "cv_r2_log": r2_log,
-        "cv_spearman": spearman,
-        "cv_mae_raw": mae,
-        "residual_std_log": float(residual.std()),
-        "smearing_factor": target_tf.smearing_factor_,
-    }
-
-    print("\n" + "=" * 78)
-    print("5. SMOKE TEST -- Ridge(alpha=0.01) on the processed features, 5-fold CV")
-    print("=" * 78)
-    print(f"  CV R2 on log(value)     {r2_log:.5f}")
-    print(f"  CV Spearman             {spearman:.5f}")
-    print(f"  CV MAE (dollars)        {mae:,.2f}")
-    print(f"  residual spread (log)   {residual.std():.4f}"
-          f"  ~ {100 * (np.exp(residual.std()) - 1):.1f}% around the fit")
-    print(f"  Duan smearing factor    {target_tf.smearing_factor_:.4f}")
-    print("\n  The preprocessor is refitted inside every fold, so this score carries no")
-    print("  leakage. It measures the representation, not customer behaviour: EDA 7 showed")
-    print("  the target is a deterministic formula in these features, so a near-perfect")
-    print("  score here confirms the pipeline works -- it is not a forecasting result.")
-    return result
+def print_checks(checks: List[Check]) -> None:
+    """One aligned line per check, so a failure is impossible to miss."""
+    for check in checks:
+        detail = f"  -- {check.detail}" if check.detail else ""
+        print(f"  [{check.status:4s}] {check.name}{detail}")
 
 
 # --------------------------------------------------------------------------- #
-# Orchestration
+# Stages
 # --------------------------------------------------------------------------- #
 
 
-def main(argv=None) -> int:
-    args = parse_args(argv)
-    config = config_from_args(args)
-    outdir = Path(args.outdir)
-
-    print("=" * 78)
-    print("CAPSTONE -- CLV DATA PREPROCESSING PIPELINE")
-    print("=" * 78)
-    print(f"  data    {args.data}")
-    print(f"  outdir  {outdir if not args.no_save else '(not saving)'}")
-
-    # 1-2. load and audit ---------------------------------------------------- #
+def run_preprocessing(args: argparse.Namespace, config: PreprocessConfig) -> dict:
+    """Stages 1-5: audit, filter, split, fit on train only, transform both."""
     raw = load_raw(args.data, target=config.target)
     audit = audit_dataset(raw, target=config.target)
     print_audit(audit)
 
-    # 3. row-level filtering ------------------------------------------------- #
     clean, removed = filter_rows(
         raw,
         config=config,
         drop_invalid_recency=args.drop_invalid_recency,
         drop_non_positive_target=True,
     )
-    print("\n" + "=" * 78)
-    print("2. ROW FILTERING -- removal is opt-in and always reported")
-    print("=" * 78)
+    banner(2, "ROW FILTERING -- removal is opt-in and always reported")
     print(f"  rows in {len(raw)} -> rows out {len(clean)}"
           f"{('  removed: ' + str(removed)) if removed else '  (nothing removed)'}")
     if not args.drop_invalid_recency:
@@ -319,13 +237,11 @@ def main(argv=None) -> int:
         print(f"  the {n_bad} impossible-recency rows were kept and will be handled in-pipeline"
               f" (policy={config.recency_policy})")
 
-    # 4. split --------------------------------------------------------------- #
     train_raw, test_raw = stratified_split(clean, config)
     X_train_raw = train_raw.drop(columns=[config.target])
     X_test_raw = test_raw.drop(columns=[config.target])
     y_train, y_test = train_raw[config.target], test_raw[config.target]
 
-    # 5. fit on train only, transform both ----------------------------------- #
     prep = CLVPreprocessor(config).fit(X_train_raw)
     X_train = prep.transform(X_train_raw)
     X_test = prep.transform(X_test_raw)
@@ -334,9 +250,7 @@ def main(argv=None) -> int:
     y_train_log = target_tf.transform(y_train)
     y_test_log = target_tf.transform(y_test)
 
-    print("\n" + "=" * 78)
-    print("3. PREPROCESSING -- fitted on the training split only")
-    print("=" * 78)
+    banner(3, "PREPROCESSING -- fitted on the training split only")
     report = prep.quality_report()
     print(f"  {len(prep.input_features_)} raw columns -> {prep.n_features_out_} model features")
     print(f"  steps: {' -> '.join(name for name, _ in prep.pipeline_.steps)}")
@@ -356,52 +270,136 @@ def main(argv=None) -> int:
                   f"   from [{raw_lo:,.3f}, {raw_hi:,.3f}], {n} train values beyond")
     print(f"\n  first 8 model features: {prep.feature_names_out_[:8]}")
 
-    # 6. validation ---------------------------------------------------------- #
-    checks = validate_outputs(X_train, X_test, y_train, y_test, prep)
+    return {
+        "audit": audit, "removed": removed, "prep": prep, "prep_report": report,
+        "train_raw": train_raw,
+        "X_train_raw": X_train_raw, "X_test_raw": X_test_raw,
+        "X_train": X_train, "X_test": X_test,
+        "y_train": y_train, "y_test": y_test,
+        "y_train_log": y_train_log, "y_test_log": y_test_log,
+    }
 
-    # 7. smoke test ---------------------------------------------------------- #
-    smoke = smoke_test(train_raw, config) if not args.no_validate else None
 
-    # 8. persist ------------------------------------------------------------- #
+def run_validation(args: argparse.Namespace, config: PreprocessConfig, data: dict) -> dict:
+    """Stages 6-8: the three groups of checks defined in src/preprocessing.py."""
+    checks: List[Check] = []
+
+    banner(4, "OUTPUT VALIDATION -- the processed data must be usable and leakage-free")
+    contract = check_output_contract(data["X_train"], data["X_test"],
+                                     data["y_train"], data["y_test"], data["prep"])
+    print_checks(contract)
+    checks += contract
+
+    if args.no_tests:
+        banner(5, "TRANSFORMER TESTS -- skipped (--no-tests)")
+    else:
+        banner(5, "TRANSFORMER TESTS -- the same rows, put through the pipeline sideways")
+        print("  Each case runs on raw test rows the preprocessor was not fitted on. The")
+        print("  first one is the one that matters most: if a single row does not score")
+        print("  exactly as it does inside a batch, predict.py disagrees with the")
+        print("  evaluation and nothing downstream reveals it.\n")
+        behaviour = check_transformer_behaviour(data["prep"], data["X_train_raw"],
+                                                data["X_test_raw"], seed=config.random_state)
+        print_checks(behaviour)
+        checks += behaviour
+
+    if args.no_stat_checks:
+        banner(6, "STATISTICAL VALIDATION -- skipped (--no-stat-checks)")
+    else:
+        banner(6, "STATISTICAL VALIDATION -- is this still the pipeline the EDA measured?")
+        print(f"  {args.cv_folds}-fold CV with the preprocessor refitted inside every fold.")
+        print("  The last check refits it on a shuffled target, where any score above")
+        print("  zero would mean information about y had reached the features.\n")
+        statistics = check_statistics(data["train_raw"], config,
+                                      cv_folds=args.cv_folds, seed=config.random_state)
+        print_checks(statistics)
+        checks += statistics
+
+    summary = summarise(checks)
+    print(f"\n  {summary['passed']} passed, {summary['failed']} failed, "
+          f"{summary['skipped']} skipped")
+    if summary["failed"]:
+        print("  FAILED: " + "; ".join(summary["failures"]))
+    return summary
+
+
+def save_everything(args: argparse.Namespace, config: PreprocessConfig,
+                    data: dict, validation: dict) -> list:
+    """Write the processed data, the fitted pipeline and the reports."""
+    outdir = Path(args.outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    target = config.target
+    written: list = []
+
+    train_out = data["X_train"].assign(**{target: data["y_train"].to_numpy(),
+                                          f"log_{target}": data["y_train_log"]})
+    test_out = data["X_test"].assign(**{target: data["y_test"].to_numpy(),
+                                        f"log_{target}": data["y_test_log"]})
+    train_out.to_csv(outdir / "processed_train.csv", index=False)
+    test_out.to_csv(outdir / "processed_test.csv", index=False)
+    written += [outdir / "processed_train.csv", outdir / "processed_test.csv"]
+    written.append(data["prep"].save(outdir / "preprocessor.joblib"))
+    written.append(config.to_json(outdir / "preprocess_config.json"))
+
+    (outdir / "data_audit.json").write_text(json.dumps(data["audit"], indent=2), encoding="utf-8")
+    written.append(outdir / "data_audit.json")
+
+    (outdir / "validation_report.json").write_text(
+        json.dumps(validation, indent=2, default=str), encoding="utf-8")
+    written.append(outdir / "validation_report.json")
+
+    (outdir / "preprocessing_report.json").write_text(
+        json.dumps({"config": asdict(config), "rows_removed": data["removed"],
+                    "fitted_pipeline": data["prep_report"],
+                    "validation": {k: v for k, v in validation.items() if k != "checks"}},
+                   indent=2, default=str),
+        encoding="utf-8")
+    written.append(outdir / "preprocessing_report.json")
+    return written
+
+
+# --------------------------------------------------------------------------- #
+# Orchestration
+# --------------------------------------------------------------------------- #
+
+
+def empty_summary() -> dict:
+    return {"total": 0, "passed": 0, "failed": 0, "skipped": 0, "failures": [], "checks": []}
+
+
+def main(argv=None) -> int:
+    args = parse_args(argv)
+    config = config_from_args(args)
+    outdir = Path(args.outdir)
+
+    print("=" * 78)
+    print("CAPSTONE -- CLV DATA PREPROCESSING PIPELINE")
+    print("=" * 78)
+    print(f"  data    {args.data}")
+    print(f"  outdir  {outdir if not args.no_save else '(not saving)'}")
+    print(f"  stages  {'process' if args.no_validate else 'process -> validate -> test'}")
+
+    data = run_preprocessing(args, config)
+    validation = empty_summary() if args.no_validate else run_validation(args, config, data)
+
     if not args.no_save:
-        outdir.mkdir(parents=True, exist_ok=True)
-        train_out = X_train.assign(**{config.target: y_train.to_numpy(),
-                                      f"log_{config.target}": y_train_log})
-        test_out = X_test.assign(**{config.target: y_test.to_numpy(),
-                                    f"log_{config.target}": y_test_log})
-        train_out.to_csv(outdir / "processed_train.csv", index=False)
-        test_out.to_csv(outdir / "processed_test.csv", index=False)
-        prep.save(outdir / "preprocessor.joblib")
-        config.to_json(outdir / "preprocess_config.json")
-        (outdir / "data_audit.json").write_text(
-            json.dumps(audit, indent=2), encoding="utf-8")
-        (outdir / "preprocessing_report.json").write_text(
-            json.dumps(
-                {
-                    "config": asdict(config),
-                    "rows_removed": removed,
-                    "fitted_pipeline": report,
-                    "validation": checks,
-                    "smoke_test": smoke,
-                },
-                indent=2, default=str,
-            ),
-            encoding="utf-8",
-        )
-
-        print("\n" + "=" * 78)
-        print("6. ARTIFACTS")
-        print("=" * 78)
-        for name in ("processed_train.csv", "processed_test.csv", "preprocessor.joblib",
-                     "preprocess_config.json", "data_audit.json", "preprocessing_report.json"):
-            print(f"  {outdir / name}")
+        written = save_everything(args, config, data, validation)
+        banner(7, "ARTIFACTS")
+        for path in written:
+            print(f"  {path}")
         print("\n  Reuse on new customers:")
         print("    from src.preprocessing import CLVPreprocessor")
         print(f"    prep = CLVPreprocessor.load(r'{outdir / 'preprocessor.joblib'}')")
         print("    X_new = prep.transform(new_customers_df)")
 
+    if validation["failed"]:
+        print(f"\nFAILED -- {validation['failed']} of {validation['total']} checks did not pass.")
+        print("Nothing was written (--no-save)." if args.no_save else
+              "The processed data was still written; fix the failures before modelling.")
+        return 1
+
     print("\nDone. The test split is transformed but must stay untouched until a final")
-    print("model is scored once (EDA 8).")
+    print("model is scored once (EDA 8) -- that is what train.py does.")
     return 0
 
 
