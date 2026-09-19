@@ -72,8 +72,24 @@ import pandas as pd
 from sklearn.base import BaseEstimator, RegressorMixin, TransformerMixin, clone
 from sklearn.model_selection import KFold, StratifiedKFold
 
-from .metrics import scorecard
-from .preprocessing import AOV_COL, COUNT_COL, Check, LogTargetTransformer, _Recorder, quiet
+# Imported as part of the package (``from src.models import ...``) the relative
+# imports below are correct. Run as a script (``python src/models.py``, or the
+# editor's Run button) there is no parent package for the leading dot to resolve
+# against, so the module puts the project root on sys.path and imports absolutely.
+# The __main__ block at the bottom is a self-contained smoke test of all three
+# ladders, which is what makes running this file directly worth doing.
+if __package__ in (None, ""):                                    # pragma: no cover
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from src.metrics import scorecard
+    from src.preprocessing import (AOV_COL, COUNT_COL, Check, LogTargetTransformer,
+                                   _Recorder, quiet)
+else:
+    from .metrics import scorecard
+    from .preprocessing import (AOV_COL, COUNT_COL, Check, LogTargetTransformer,
+                                _Recorder, quiet)
 
 #: A library logger: it inherits the handler main.py installs on "capstone".
 logger = logging.getLogger("capstone.models")
@@ -109,12 +125,16 @@ HEADLINE_METRIC = {
 
 
 def has_xgboost() -> bool:
-    """XGBoost is an optional dependency: nothing here requires it."""
-    try:
-        import xgboost  # noqa: F401
-    except ImportError:
-        return False
-    return True
+    """Is XGBoost installed? It is optional -- nothing in this module needs it.
+
+    ``find_spec`` asks the import system whether the package is available without
+    importing it. That avoids paying for a heavy import just to answer a yes/no
+    question, and it keeps this file free of an import that a type checker cannot
+    resolve when the editor is pointed at an environment where XGBoost is absent.
+    """
+    import importlib.util
+
+    return importlib.util.find_spec("xgboost") is not None
 
 
 def infer_task(y=None, max_classes: int = 20) -> str:
@@ -948,7 +968,7 @@ def check_baselines(results: BaselineResults, X: pd.DataFrame, y=None) -> List[C
     """Assertions that catch a broken ladder, a leak, or a silently useless model."""
     rec = _Recorder("baseline models")
     task, board = results.task, results.board
-    metric, higher = HEADLINE_METRIC[task]
+    metric = HEADLINE_METRIC[task][0]
 
     rec.record("every baseline produced a score",
                bool(len(board)) and not board[metric].isna().all(),
@@ -1011,3 +1031,101 @@ def check_baselines(results: BaselineResults, X: pd.DataFrame, y=None) -> List[C
         rec.skip("benchmark covers every baseline", "benchmarking disabled")
 
     return rec.checks
+
+
+# --------------------------------------------------------------------------- #
+# Smoke test: python src/models.py
+# --------------------------------------------------------------------------- #
+
+
+def _synthetic_regression(rng) -> Tuple[pd.DataFrame, pd.Series]:
+    """A multiplicative target, like the capstone's: value = count^a * aov^b * noise."""
+    n = 400
+    X = pd.DataFrame({
+        COUNT_COL: rng.lognormal(1.5, 0.9, n),
+        AOV_COL: rng.lognormal(4.2, 0.5, n),
+        "days_since_first_purchase": rng.uniform(30, 1200, n),
+        "days_since_last_purchase": rng.uniform(1, 400, n),
+    })
+    y = (np.exp(3.4) * X[COUNT_COL] ** 0.3 * X[AOV_COL] ** 0.86
+         * X["days_since_last_purchase"] ** -0.32 * rng.lognormal(0, 0.1, n))
+    return X, pd.Series(y, name="value")
+
+
+def _synthetic_classification(rng) -> Tuple[pd.DataFrame, pd.Series]:
+    """An 80/20 split, so the majority-class baseline says something worth hearing."""
+    n = 400
+    X = pd.DataFrame({"a": rng.normal(size=n), "b": rng.normal(size=n)})
+    y = pd.Series((X["a"] + 0.4 * rng.normal(size=n) > 0.85).astype(int), name="churned")
+    return X, y
+
+
+def _synthetic_clustering(rng) -> pd.DataFrame:
+    """Three well-separated blobs: k-means should beat random labels comfortably."""
+    def blob(cx: float, cy: float, n: int) -> pd.DataFrame:
+        return pd.DataFrame({"x": rng.normal(cx, 0.3, n), "y": rng.normal(cy, 0.3, n)})
+
+    return pd.concat([blob(0, 0, 100), blob(4, 4, 100), blob(0, 5, 100)],
+                     ignore_index=True)
+
+
+def _smoke_test() -> int:
+    """Run all three ladders on synthetic data and report; 0 if every check passed.
+
+    This is what ``python src/models.py`` does. It needs no dataset, no
+    preprocessor and nothing else from the project, so it also serves as the
+    worked example of using this module on a problem that is not the capstone.
+    """
+    print("=" * 78)
+    print("src/models.py -- BASELINE LADDER SMOKE TEST")
+    print("=" * 78)
+    print("  Synthetic data, all three tasks, no project dependencies.")
+
+    rng = np.random.default_rng(42)
+    failures: List[str] = []
+
+    cases = [
+        ("regression", *_synthetic_regression(rng), {}),
+        ("classification", *_synthetic_classification(rng), {}),
+        ("clustering", _synthetic_clustering(rng), None, {"n_clusters": 3}),
+    ]
+
+    for task, X, y, extra in cases:
+        print("\n" + "-" * 78)
+        print(f"{task.upper()}  ({len(X)} rows, inferred as {infer_task(y)!r})")
+        print("-" * 78)
+        results = evaluate_baselines(X, y, task=task, benchmark_repeats=1, **extra)
+
+        metric = HEADLINE_METRIC[task][0]
+        columns = [c for c in _metric_names(task) if c in results.board.columns][:4]
+        print(results.board[columns].round(4).to_string())
+        print(f"\n  best: {results.best}  ({metric})")
+
+        bar = results.analysis.get("bar_for_a_real_model")
+        if bar:
+            print(f"  bar to clear: {bar['baseline']} at {bar['score']:.4f} -- "
+                  f"{bar['model_baselines_beating_it']} of {bar['of']} model baselines beat it")
+        if not results.analysis.get("metrics_agree", True):
+            print(f"  {results.analysis['disagreement']}")
+
+        print("\n  cost (median of 1 fit):")
+        print(results.benchmark.round(3).to_string())
+
+        print("\n  checks:")
+        for check in results.checks:
+            print(f"    [{check.status:4s}] {check.name}"
+                  f"{('  -- ' + check.detail) if check.detail else ''}")
+            if check.failed:
+                failures.append(f"{task}: {check.name}")
+
+    print("\n" + "=" * 78)
+    if failures:
+        print(f"FAILED -- {len(failures)} check(s): " + "; ".join(failures))
+        return 1
+    print("All three ladders ran and every check passed.")
+    print("In the project this module is used through main.py (stage 9) and train.py.")
+    return 0
+
+
+if __name__ == "__main__":                                       # pragma: no cover
+    raise SystemExit(_smoke_test())

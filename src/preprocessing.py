@@ -77,6 +77,16 @@ from sklearn.linear_model import Ridge
 from sklearn.model_selection import KFold, cross_validate, train_test_split
 from sklearn.pipeline import Pipeline
 
+# This module has no relative imports of its own, but CLVPreprocessor._build
+# reaches for src.feature_engineering at fit time. Run as a script
+# (``python src/preprocessing.py``) sys.path[0] is src/, not the project root, so
+# that import would fail; putting the root on the path makes the file runnable on
+# its own, which is what the __main__ smoke test at the bottom needs.
+if __package__ in (None, ""):                                    # pragma: no cover
+    import sys as _sys
+
+    _sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 __all__ = [
     "TARGET",
     "SKEWED_NUMERIC",
@@ -902,8 +912,12 @@ class CLVPreprocessor(BaseEstimator, TransformerMixin):
         # The feature half -- derive, log, expand, scale, select -- belongs to
         # src/feature_engineering.py. The import is local because that module
         # imports this one: cleaning is the lower layer and must not depend on
-        # feature engineering at import time.
-        from .feature_engineering import build_feature_steps
+        # feature engineering at import time. The branch covers this file being
+        # run as a script, where there is no package for the dot to resolve to.
+        if __package__ in (None, ""):                            # pragma: no cover
+            from src.feature_engineering import build_feature_steps
+        else:
+            from .feature_engineering import build_feature_steps
 
         steps += build_feature_steps(cfg)
         return Pipeline(steps)
@@ -1414,3 +1428,81 @@ def summarise(checks: Sequence[Check]) -> dict:
         "failures": [c.name for c in checks if c.failed],
         "checks": [c.as_dict() for c in checks],
     }
+
+
+# --------------------------------------------------------------------------- #
+# Smoke test: python src/preprocessing.py
+# --------------------------------------------------------------------------- #
+
+
+def _smoke_test() -> int:
+    """Fit the pipeline on the project's data if it is there, on synthetic rows if not.
+
+    Runs the audit, the split, the fit and the three check groups -- the same
+    ones main.py runs -- and exits non-zero if any of them fail.
+    """
+    print("=" * 78)
+    print("src/preprocessing.py -- PIPELINE SMOKE TEST")
+    print("=" * 78)
+
+    data_file = Path(__file__).resolve().parents[1] / "data" / "synthetic_data_126.csv"
+    if data_file.exists():
+        frame = load_raw(data_file)
+        print(f"  data: {data_file.name} ({len(frame)} rows)")
+    else:
+        rng = np.random.default_rng(42)
+        n = 400
+        frame = pd.DataFrame({
+            COUNT_COL: rng.lognormal(1.5, 0.9, n),
+            AOV_COL: rng.lognormal(4.2, 0.5, n),
+            FIRST_PURCHASE_COL: rng.uniform(30, 1200, n),
+            LAST_PURCHASE_COL: rng.uniform(1, 400, n),
+            "product_category_diversity": rng.uniform(0.01, 0.8, n),
+            "loyalty_program_membership": rng.choice(["Enrolled", "Not Enrolled"], n),
+        })
+        frame[TARGET] = (np.exp(3.4) * frame[COUNT_COL] ** 0.3 * frame[AOV_COL] ** 0.86
+                         * frame[LAST_PURCHASE_COL] ** -0.32 * rng.lognormal(0, 0.1, n))
+        print(f"  data: synthetic ({n} rows) -- {data_file.name} not found")
+
+    config = PreprocessConfig()
+    audit = audit_dataset(frame)
+    print(f"  audit: {audit['rows']} rows, {audit['missing_cells_total']} missing cells, "
+          f"target skew {audit['target']['skew']:.2f}")
+    violations = audit["domain_violations"]
+    print(f"         {violations.get('last_purchase_before_first', 0)} impossible recencies, "
+          f"{violations.get('non_integer_purchase_count', 0)} non-integer counts")
+
+    clean, _ = filter_rows(frame, config=config)
+    train, test = stratified_split(clean, config)
+    X_train = train.drop(columns=[TARGET])
+    X_test = test.drop(columns=[TARGET])
+    y_train, y_test = train[TARGET], test[TARGET]
+    y_train_log = LogTargetTransformer().fit(y_train).transform(y_train)
+
+    with quiet():
+        prep = CLVPreprocessor(config).fit(X_train, y_train_log)
+        processed_train, processed_test = prep.transform(X_train), prep.transform(X_test)
+    print(f"  fitted: {len(prep.input_features_)} raw columns -> "
+          f"{prep.n_features_out_} model features")
+    print(f"  steps:  {' -> '.join(name for name, _ in prep.pipeline_.steps)}\n")
+
+    checks = (check_output_contract(processed_train, processed_test, y_train, y_test, prep)
+              + check_transformer_behaviour(prep, X_train, X_test, y_train_log)
+              + check_statistics(train, config))
+    for check in checks:
+        print(f"  [{check.status:4s}] {check.name}"
+              f"{('  -- ' + check.detail) if check.detail else ''}")
+
+    summary = summarise(checks)
+    print("\n" + "=" * 78)
+    print(f"{summary['passed']} passed, {summary['failed']} failed, "
+          f"{summary['skipped']} skipped")
+    if summary["failed"]:
+        print("FAILED: " + "; ".join(summary["failures"]))
+        return 1
+    print("In the project this module is used through main.py and train.py.")
+    return 0
+
+
+if __name__ == "__main__":                                       # pragma: no cover
+    raise SystemExit(_smoke_test())

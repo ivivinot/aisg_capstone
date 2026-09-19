@@ -118,17 +118,22 @@ import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
 
-from .preprocessing import (
-    AOV_COL,
-    COUNT_COL,
-    FIRST_PURCHASE_COL,
-    LAST_PURCHASE_COL,
-    SKEWED_NUMERIC,
-    Check,
-    _as_frame,
-    _Recorder,
-    quiet,
-)
+# Relative when imported as part of the package, absolute when this file is run
+# directly (``python src/feature_engineering.py``), where there is no parent
+# package for the leading dot to resolve against. The __main__ block at the
+# bottom is a self-contained smoke test.
+if __package__ in (None, ""):                                    # pragma: no cover
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from src.preprocessing import (AOV_COL, COUNT_COL, FIRST_PURCHASE_COL,
+                                   LAST_PURCHASE_COL, SKEWED_NUMERIC, Check,
+                                   _as_frame, _Recorder, quiet)
+else:
+    from .preprocessing import (AOV_COL, COUNT_COL, FIRST_PURCHASE_COL,
+                                LAST_PURCHASE_COL, SKEWED_NUMERIC, Check,
+                                _as_frame, _Recorder, quiet)
 
 logger = logging.getLogger("capstone.feature_engineering")
 
@@ -689,7 +694,13 @@ def compare_feature_sets(
     from sklearn.model_selection import KFold, cross_validate
     from sklearn.pipeline import Pipeline
 
-    from .preprocessing import CLVPreprocessor          # local: avoids an import cycle
+    # Local import: this module is the upper layer, so importing the preprocessor
+    # at module level would close a cycle. The branch mirrors the one at the top
+    # of the file, for the case where this file is run as a script.
+    if __package__ in (None, ""):                                # pragma: no cover
+        from src.preprocessing import CLVPreprocessor
+    else:
+        from .preprocessing import CLVPreprocessor
 
     X = train_raw.drop(columns=[config.target])
     y_log = np.log(train_raw[config.target].to_numpy())
@@ -881,3 +892,103 @@ def _apply_until(prep, step_name: str, frame: pd.DataFrame,
     index = names.index(step_name) + (1 if include else 0)
     with quiet(logging.ERROR):
         return _as_frame(prep.pipeline_[:index].transform(frame[prep.input_features_]))
+
+
+# --------------------------------------------------------------------------- #
+# Smoke test: python src/feature_engineering.py
+# --------------------------------------------------------------------------- #
+
+
+def _smoke_test() -> int:
+    """Create every catalogued feature on synthetic rows and check the claims hold.
+
+    Needs no dataset: the rows below are generated to look like the capstone's
+    (a heavy right tail, a handful of customers whose last purchase precedes
+    their first), so the log-space classification and the selection strategies
+    are exercised on data with the same shape.
+    """
+    if __package__ in (None, ""):                                # pragma: no cover
+        from src.preprocessing import CLVPreprocessor, PreprocessConfig
+    else:
+        from .preprocessing import CLVPreprocessor, PreprocessConfig
+
+    print("=" * 78)
+    print("src/feature_engineering.py -- FEATURE ENGINEERING SMOKE TEST")
+    print("=" * 78)
+
+    rng = np.random.default_rng(42)
+    n = 300
+    frame = pd.DataFrame({
+        COUNT_COL: rng.lognormal(1.5, 0.9, n),
+        AOV_COL: rng.lognormal(4.2, 0.5, n),
+        FIRST_PURCHASE_COL: rng.uniform(30, 1200, n),
+        LAST_PURCHASE_COL: rng.uniform(1, 400, n),
+        "product_category_diversity": rng.uniform(0.01, 0.8, n),
+        "loyalty_program_membership": rng.choice(["Enrolled", "Not Enrolled"], n),
+    })
+    target = (np.exp(3.4) * frame[COUNT_COL] ** 0.3 * frame[AOV_COL] ** 0.86
+              * frame[LAST_PURCHASE_COL] ** -0.32 * rng.lognormal(0, 0.1, n))
+    y_log = np.log(target)
+
+    print(f"  {n} synthetic customers; "
+          f"{int((frame[LAST_PURCHASE_COL] > frame[FIRST_PURCHASE_COL]).sum())} of them with a "
+          "last purchase before their first")
+
+    print("\n1. THE CATALOGUE")
+    print("-" * 78)
+    for name, spec in FEATURE_SPECS.items():
+        verdict = "new in log space" if spec.new_in_log_space else "linear combination of logs"
+        print(f"  {name:22s} {spec.formula:28s} {spec.kind:11s} {verdict}")
+
+    print("\n2. CREATION")
+    print("-" * 78)
+    created = DerivedFeatures(features=ALL_DERIVED).fit(frame).transform(frame)
+    print(f"  {frame.shape[1]} raw columns -> {created.shape[1]} columns")
+    print(created[list(ALL_DERIVED)].describe().loc[["min", "50%", "max"]].round(3).to_string())
+
+    print("\n3. THE CLAIM THE STRATEGY RESTS ON")
+    print("-" * 78)
+    numeric = [c for c in frame.columns if frame[c].dtype.kind == "f"]
+    logs = np.log(frame[numeric].to_numpy(dtype=float))
+    base_rank = np.linalg.matrix_rank(logs)
+    verdicts = []
+    for name, spec in FEATURE_SPECS.items():
+        values = spec.build(frame).to_numpy(dtype=float)
+        keep = np.ones(len(frame), bool) if spec.kind == "threshold" else values > 0
+        column = values[keep] if spec.kind == "threshold" else np.log(values[keep])
+        rank = np.linalg.matrix_rank(np.column_stack([logs[keep], column]))
+        expected = np.linalg.matrix_rank(logs[keep]) + (1 if spec.new_in_log_space else 0)
+        ok = rank == expected
+        verdicts.append(ok)
+        print(f"  [{'PASS' if ok else 'FAIL'}] {name:22s} rank {rank} "
+              f"(expected {expected})")
+    print(f"  base rank of the logged inputs: {base_rank}")
+
+    print("\n4. SELECTION")
+    print("-" * 78)
+    config = PreprocessConfig(add_derived_features=True, derived_features="all",
+                              poly_degree=2)
+    with quiet(logging.ERROR):
+        expanded = CLVPreprocessor(config).fit(frame, y_log).transform(frame)
+    for strategy, k in (("none", None), ("variance", None), ("correlation", None),
+                        ("model", 20), ("vif", None)):
+        with quiet(logging.ERROR):
+            selector = FeatureSelector(strategy=strategy, k=k).fit(expanded, y_log)
+        print(f"  {strategy:12s} kept {len(selector.feature_names_out_):4d} "
+              f"of {expanded.shape[1]}")
+
+    print("\n5. PER-FEATURE DIAGNOSTICS (top 5 by |Spearman|)")
+    print("-" * 78)
+    print(feature_report(expanded, y_log, top=5).round(4).to_string())
+
+    print("\n" + "=" * 78)
+    if not all(verdicts):
+        print("FAILED -- the catalogue's log-space classification does not hold here.")
+        return 1
+    print("Every catalogued feature behaved as its spec claims.")
+    print("In the project this module is used through main.py (stage 4) and CLVPreprocessor.")
+    return 0
+
+
+if __name__ == "__main__":                                       # pragma: no cover
+    raise SystemExit(_smoke_test())
