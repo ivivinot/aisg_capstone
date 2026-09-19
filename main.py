@@ -9,6 +9,8 @@
     python main.py --feature-selection vif  # and what the wrong selection costs
     python main.py --metric-guide           # what each metric answers, and how it lies
     python main.py --baseline-catalogue     # the baselines for every task, then exit
+    python main.py --architectures          # what each advanced model assumes, then exit
+    python main.py --no-advanced            # skip the architecture comparison
     python main.py --no-baselines           # skip the baseline ladder
     python main.py --no-stat-checks         # skip the slow cross-validated checks
     python main.py --no-validate            # process only, check nothing
@@ -30,7 +32,9 @@ What it does, in order:
        measured, and a label-shuffle test whose score must collapse to zero
     9. run the baseline ladder (src/models.py): select, train, evaluate, analyse
        the metrics and benchmark the cost of the models a real one must beat
-   10. write the processed data, the fitted pipeline and the reports to outputs/
+   10. run two further architectures (src/advanced_models.py) on the same folds,
+       compare them with the ladder fold by fold, and write the comparison up
+   11. write the processed data, the fitted pipeline and the reports to outputs/
 
 Checks are collected, not raised, so one run reports every failure -- and the
 process exits non-zero if anything failed, which makes this usable as a gate.
@@ -78,6 +82,7 @@ from src.models import (  # noqa: E402
     metric_guide,
     spec_table,
 )
+from src.advanced_models import ADVANCED_SPECS, run_comparison  # noqa: E402
 from src.feature_engineering import (  # noqa: E402
     FEATURE_SPECS,
     SELECTION_STRATEGIES,
@@ -197,6 +202,23 @@ def add_baseline_arguments(p: argparse.ArgumentParser) -> argparse.ArgumentParse
     return p
 
 
+def add_advanced_arguments(p: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """The advanced-architecture flags (src/advanced_models.py)."""
+    g = p.add_argument_group("advanced models (src/advanced_models.py)")
+    g.add_argument("--no-advanced", action="store_true",
+                   help="skip the second and third architectures (stage 10)")
+    g.add_argument("--no-report", action="store_true",
+                   help="do not write the Markdown comparison report")
+    g.add_argument("--architectures", action="store_true",
+                   help="print what each advanced architecture assumes, then exit")
+    g.add_argument("--tune-advanced", action="store_true",
+                   help="give each advanced architecture a bounded randomised search "
+                        "before comparing, so a baseline win is not a win over defaults")
+    g.add_argument("--search-iter", type=int, default=20,
+                   help="draws per architecture when --tune-advanced is on")
+    return p
+
+
 def parse_args(argv=None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Preprocess the capstone CLV dataset, then test and validate the result.",
@@ -205,6 +227,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     add_preprocessing_arguments(p)
     add_validation_arguments(p)
     add_baseline_arguments(p)
+    add_advanced_arguments(p)
     return p.parse_args(argv)
 
 
@@ -525,9 +548,66 @@ def run_baseline_stage(args: argparse.Namespace, config: PreprocessConfig,
     return results
 
 
+def run_advanced_stage(args: argparse.Namespace, config: PreprocessConfig,
+                       data: dict, baselines: BaselineResults):
+    """Stage 10: two further architectures, compared with the ladder fold by fold.
+
+    The advanced models get **the same preprocessing and the same folds** as the
+    baselines. Anything else would measure the features or the split rather than
+    the architecture, which is the only thing this stage is asking about.
+    """
+    banner(10, "ADVANCED MODELS -- two more architectures, and whether they earn it")
+    task = baselines.task
+    for spec in ADVANCED_SPECS:
+        if spec.task == task:
+            print(f"  {spec.name:22s} {spec.architecture}")
+            print(f"  {'':22s} bias: {spec.bias.split('.')[0]}.")
+    print(f"  hyperparameters: {'bounded randomised search, ' + str(args.search_iter) + ' draws each' if args.tune_advanced else 'defaults (--tune-advanced to search)'}")
+    print()
+
+    report_path = (None if args.no_save or args.no_report
+                   else Path(args.outdir) / "advanced_models_report.md")
+    results = run_comparison(
+        data["X_train_raw"], data["y_train"], task=task,
+        preprocessor=CLVPreprocessor(replace(config, poly_degree=args.baseline_poly_degree)),
+        cv=KFold(n_splits=args.cv_folds, shuffle=True, random_state=config.random_state),
+        baselines=baselines, benchmark_repeats=args.benchmark_repeats,
+        tune=args.tune_advanced, n_iter=args.search_iter,
+        report_path=report_path,
+    )
+
+    print("  Every model from both ladders, same folds, same metrics:\n")
+    show(results.combined)
+
+    if len(results.tuning):
+        print("\n  What the search chose (scored on the headline metric, not a proxy):\n")
+        show(results.tuning)
+
+    if len(results.comparison):
+        print("\n  Paired against the best model baseline, fold by fold:\n")
+        show(results.comparison[["reference", "delta", "delta_sd", "folds_won",
+                                 "p_value", "significant", "fit_time_ratio"]])
+        print("\n  'delta' is the mean difference on the SAME folds and 'delta_sd' its")
+        print("  spread across them. 'p_value' is the CORRECTED paired t-test: folds share")
+        print("  training rows, so a plain t-test would report fold noise as significance.")
+
+    analysis = results.analysis
+    if analysis.get("pooling_note"):
+        print(f"\n  NOTE: {analysis['pooling_note']}")
+    if "error_reduction" in analysis:
+        print(f"\n  The leader closes {analysis['error_reduction']:.1%} of the distance "
+              "between the reference and a perfect score.")
+    print(f"\n  VERDICT: {analysis.get('verdict', 'n/a')}")
+
+    print("\n  Checks:")
+    print_checks(results.checks)
+    return results
+
+
 def save_everything(args: argparse.Namespace, config: PreprocessConfig,
                     data: dict, validation: dict,
-                    baselines: "BaselineResults | None" = None) -> list:
+                    baselines: "BaselineResults | None" = None,
+                    advanced=None) -> list:
     """Write the processed data, the fitted pipeline and the reports."""
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -577,6 +657,21 @@ def save_everything(args: argparse.Namespace, config: PreprocessConfig,
         (outdir / "baseline_report.json").write_text(
             json.dumps(baselines.to_dict(), indent=2, default=str), encoding="utf-8")
         written.append(outdir / "baseline_report.json")
+
+    if advanced is not None:
+        advanced.board.to_csv(outdir / "advanced_leaderboard.csv")
+        written.append(outdir / "advanced_leaderboard.csv")
+        if len(advanced.combined):
+            advanced.combined.to_csv(outdir / "model_comparison.csv")
+            written.append(outdir / "model_comparison.csv")
+        if len(advanced.comparison):
+            advanced.comparison.to_csv(outdir / "paired_comparison.csv")
+            written.append(outdir / "paired_comparison.csv")
+        (outdir / "advanced_report.json").write_text(
+            json.dumps(advanced.to_dict(), indent=2, default=str), encoding="utf-8")
+        written.append(outdir / "advanced_report.json")
+        if not args.no_report:
+            written.append(outdir / "advanced_models_report.md")
     return written
 
 
@@ -607,6 +702,24 @@ def main(argv=None) -> int:
                                     initial_indent="    ", subsequent_indent="    "))
         return 0
 
+    if args.architectures:
+        print("=" * 78)
+        print("ADVANCED ARCHITECTURES -- src/advanced_models.py")
+        print("=" * 78)
+        print("  Two per task, chosen to have different inductive biases: when one wins,")
+        print("  the bias is what won, and that is a finding rather than a tuning result.")
+        for task in ("regression", "classification", "clustering"):
+            print(f"\n{task.upper()}")
+            for spec in ADVANCED_SPECS:
+                if spec.task == task:
+                    print(f"\n  {spec.name}")
+                    for label, text in (("architecture", spec.architecture),
+                                        ("bias", spec.bias), ("cost", spec.cost)):
+                        print(textwrap.fill(f"{label}: {text}", width=74,
+                                            initial_indent="    ",
+                                            subsequent_indent="      "))
+        return 0
+
     config = config_from_args(args)
     outdir = Path(args.outdir)
 
@@ -621,15 +734,20 @@ def main(argv=None) -> int:
     checks = [] if args.no_validate else run_validation(args, config, data)
 
     baselines = None
+    advanced = None
     if not args.no_baselines:
         baselines = run_baseline_stage(args, config, data)
         checks += baselines.checks
 
+        if not args.no_advanced:
+            advanced = run_advanced_stage(args, config, data, baselines)
+            checks += advanced.checks
+
     validation = print_tally(checks) if checks else empty_summary()
 
     if not args.no_save:
-        written = save_everything(args, config, data, validation, baselines)
-        banner(10, "ARTIFACTS")
+        written = save_everything(args, config, data, validation, baselines, advanced)
+        banner(11, "ARTIFACTS")
         for path in written:
             print(f"  {path}")
         print("\n  Reuse on new customers:")
