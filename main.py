@@ -7,6 +7,9 @@
     python main.py --derived-features all   # add every engineered column
     python main.py --compare-features       # measure what each feature set is worth
     python main.py --feature-selection vif  # and what the wrong selection costs
+    python main.py --metric-guide           # what each metric answers, and how it lies
+    python main.py --baseline-catalogue     # the baselines for every task, then exit
+    python main.py --no-baselines           # skip the baseline ladder
     python main.py --no-stat-checks         # skip the slow cross-validated checks
     python main.py --no-validate            # process only, check nothing
 
@@ -25,7 +28,9 @@ What it does, in order:
        and whether the catalogue's log-space claims actually hold
     8. validate statistically: feature count per degree, the CV R2 the EDA
        measured, and a label-shuffle test whose score must collapse to zero
-    9. write the processed data, the fitted pipeline and the reports to outputs/
+    9. run the baseline ladder (src/models.py): select, train, evaluate, analyse
+       the metrics and benchmark the cost of the models a real one must beat
+   10. write the processed data, the fitted pipeline and the reports to outputs/
 
 Checks are collected, not raised, so one run reports every failure -- and the
 process exits non-zero if anything failed, which makes this usable as a gate.
@@ -39,11 +44,13 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import asdict
+import textwrap
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import List
 
 import pandas as pd
+from sklearn.model_selection import KFold
 
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
@@ -63,6 +70,13 @@ from src.preprocessing import (  # noqa: E402
     load_raw,
     stratified_split,
     summarise,
+)
+from src.models import (  # noqa: E402
+    BaselineResults,
+    evaluate_baselines,
+    infer_task,
+    metric_guide,
+    spec_table,
 )
 from src.feature_engineering import (  # noqa: E402
     FEATURE_SPECS,
@@ -161,6 +175,28 @@ def add_validation_arguments(p: argparse.ArgumentParser) -> argparse.ArgumentPar
     return p
 
 
+def add_baseline_arguments(p: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """The baseline ladder's flags (src/models.py)."""
+    g = p.add_argument_group("baseline models (src/models.py)")
+    g.add_argument("--no-baselines", action="store_true",
+                   help="skip the baseline ladder (stage 9)")
+    g.add_argument("--task", choices=("auto", "regression", "classification", "clustering"),
+                   default="auto",
+                   help="which ladder to run; auto reads it off the target")
+    g.add_argument("--baseline-poly-degree", type=int, default=1,
+                   help="polynomial degree for the baselines' representation; 1 keeps a "
+                        "baseline a baseline")
+    g.add_argument("--no-benchmark", action="store_true",
+                   help="skip the fit-time / throughput / model-size benchmark")
+    g.add_argument("--benchmark-repeats", type=int, default=3,
+                   help="fits per baseline when timing")
+    g.add_argument("--metric-guide", action="store_true",
+                   help="print what each metric answers and how it misleads")
+    g.add_argument("--baseline-catalogue", action="store_true",
+                   help="print the baseline catalogue for every task and exit")
+    return p
+
+
 def parse_args(argv=None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Preprocess the capstone CLV dataset, then test and validate the result.",
@@ -168,6 +204,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     )
     add_preprocessing_arguments(p)
     add_validation_arguments(p)
+    add_baseline_arguments(p)
     return p.parse_args(argv)
 
 
@@ -418,6 +455,11 @@ def run_validation(args: argparse.Namespace, config: PreprocessConfig, data: dic
         print_checks(statistics)
         checks += statistics
 
+    return checks
+
+
+def print_tally(checks: List[Check]) -> dict:
+    """The one tally for the whole run, printed after the last stage that adds to it."""
     summary = summarise(checks)
     print(f"\n  {summary['passed']} passed, {summary['failed']} failed, "
           f"{summary['skipped']} skipped")
@@ -426,8 +468,66 @@ def run_validation(args: argparse.Namespace, config: PreprocessConfig, data: dic
     return summary
 
 
+def run_baseline_stage(args: argparse.Namespace, config: PreprocessConfig,
+                       data: dict) -> BaselineResults:
+    """Stage 9: the baseline ladder from src/models.py.
+
+    Baselines run on the **first-order** representation -- logged and scaled, with
+    no polynomial expansion -- even when the pipeline is configured for degree 3.
+    That is deliberate: the expansion is the modelling choice ``train.py`` is
+    supposed to *make*, and a baseline that borrows it is no longer a baseline.
+    ``--baseline-poly-degree`` overrides it.
+    """
+    banner(9, "BASELINE MODELS -- the bar a real model has to clear (readme.md 7.3)")
+    baseline_config = replace(config, poly_degree=args.baseline_poly_degree)
+    task = args.task if args.task != "auto" else infer_task(data["y_train"])
+
+    print(f"  task: {task} (inferred from the target)" if args.task == "auto"
+          else f"  task: {task} (forced with --task)")
+    print(f"  representation: log + scale, poly_degree={args.baseline_poly_degree}"
+          " -- a baseline may not borrow the expansion that model selection exists to choose")
+    print(f"  protocol: {args.cv_folds}-fold out-of-fold predictions on the training split;"
+          "\n  naive baselines skip the preprocessor entirely (they ignore X)\n")
+
+    results = evaluate_baselines(
+        data["X_train_raw"], data["y_train"], task=task,
+        preprocessor=CLVPreprocessor(baseline_config),
+        cv=KFold(n_splits=args.cv_folds, shuffle=True, random_state=config.random_state),
+        benchmark=not args.no_benchmark, benchmark_repeats=args.benchmark_repeats,
+    )
+
+    print("  Leaderboard, sorted by the headline metric for this task:\n")
+    show(results.board)
+
+    analysis = results.analysis
+    bar = analysis.get("bar_for_a_real_model")
+    print(f"\n  best baseline: {results.best}")
+    if bar:
+        print(f"  the bar: {bar['baseline']} at {analysis['headline_metric']} "
+              f"{bar['score']:.4f} -- {bar['model_baselines_beating_it']} of {bar['of']} "
+              "model baselines beat it")
+    if not analysis.get("metrics_agree", True):
+        print(f"  the metrics disagree: {analysis['disagreement']}")
+        print("  Ranking and calibration are different questions (readme.md 7.2), so a")
+        print("  single sorted column is not a verdict.")
+
+    if results.benchmark is not None:
+        print("\n  What each baseline costs (median of"
+              f" {args.benchmark_repeats} fits on the full training split):\n")
+        show(results.benchmark, decimals=3)
+
+    if args.metric_guide:
+        print("\n  What each metric is actually telling you:\n")
+        show(metric_guide(task).drop(columns=["direction"]), decimals=3)
+
+    print("\n  Checks:")
+    print_checks(results.checks)
+    return results
+
+
 def save_everything(args: argparse.Namespace, config: PreprocessConfig,
-                    data: dict, validation: dict) -> list:
+                    data: dict, validation: dict,
+                    baselines: "BaselineResults | None" = None) -> list:
     """Write the processed data, the fitted pipeline and the reports."""
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -467,6 +567,16 @@ def save_everything(args: argparse.Namespace, config: PreprocessConfig,
                    indent=2, default=str),
         encoding="utf-8")
     written.append(outdir / "preprocessing_report.json")
+
+    if baselines is not None:
+        baselines.board.to_csv(outdir / "baseline_leaderboard.csv")
+        written.append(outdir / "baseline_leaderboard.csv")
+        if baselines.benchmark is not None:
+            baselines.benchmark.to_csv(outdir / "baseline_benchmark.csv")
+            written.append(outdir / "baseline_benchmark.csv")
+        (outdir / "baseline_report.json").write_text(
+            json.dumps(baselines.to_dict(), indent=2, default=str), encoding="utf-8")
+        written.append(outdir / "baseline_report.json")
     return written
 
 
@@ -481,6 +591,22 @@ def empty_summary() -> dict:
 
 def main(argv=None) -> int:
     args = parse_args(argv)
+    if args.baseline_catalogue:
+        print("=" * 78)
+        print("BASELINE CATALOGUE -- src/models.py")
+        print("=" * 78)
+        print("  A naive floor learns one number and exists so the metrics can be read.")
+        print("  A model baseline is a real but simple estimator -- the bar a complicated")
+        print("  model actually has to clear before it is worth its complexity.")
+        for task in ("regression", "classification", "clustering"):
+            table = spec_table(task)
+            print(f"\n{task.upper()}")
+            for name, row in table.iterrows():
+                print(f"\n  {name}  [{row['kind']}]")
+                print(textwrap.fill(row["why it is here"], width=74,
+                                    initial_indent="    ", subsequent_indent="    "))
+        return 0
+
     config = config_from_args(args)
     outdir = Path(args.outdir)
 
@@ -492,11 +618,18 @@ def main(argv=None) -> int:
     print(f"  stages  {'process' if args.no_validate else 'process -> validate -> test'}")
 
     data = run_preprocessing(args, config)
-    validation = empty_summary() if args.no_validate else run_validation(args, config, data)
+    checks = [] if args.no_validate else run_validation(args, config, data)
+
+    baselines = None
+    if not args.no_baselines:
+        baselines = run_baseline_stage(args, config, data)
+        checks += baselines.checks
+
+    validation = print_tally(checks) if checks else empty_summary()
 
     if not args.no_save:
-        written = save_everything(args, config, data, validation)
-        banner(9, "ARTIFACTS")
+        written = save_everything(args, config, data, validation, baselines)
+        banner(10, "ARTIFACTS")
         for path in written:
             print(f"  {path}")
         print("\n  Reuse on new customers:")

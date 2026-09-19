@@ -1,6 +1,7 @@
 # capstone — Customer Lifetime Value
-# Everything eda.ipynb imports. Minimum pins, so the project stays installable;
-# the versions it was actually run and verified against are on the right.
+# Everything eda.ipynb and the pipeline (main.py, predict.py, src/) import.
+# Minimum pins, so the project stays installable; the versions it was actually
+# run and verified against are on the right.
 # Python >= 3.10 (tested 3.12.10)
 #
 #   pip install -r requirements.txt
@@ -16,16 +17,21 @@ scikit-learn>=1.3      # tested 1.7.1    — pipelines, CV, Ridge, RF, HistGB, S
                        #                   Pipeline.set_output(transform="pandas")
 joblib>=1.3            # tested 1.5.1    — persists the fitted preprocessor (outputs/preprocessor.joblib);
                        #                   arrives with scikit-learn, pinned here because we import it directly
-xgboost>=2.0           # tested 3.0.2    — an §9 candidate; drop it from the candidates dict to run without
+xgboost>=2.0           # tested 3.0.2    — an §9 candidate; optional, `python train.py --no-xgboost`
+                       #                   runs the whole pipeline without it
 
 # ── charts ───────────────────────────────────────────────────────────────────
-matplotlib>=3.7        # tested 3.10.0
-seaborn>=0.13          # tested 0.13.2   — sns.set_theme styling only
+matplotlib>=3.7        # tested 3.10.0  — also writes outputs/figures/*.png (Agg backend)
+seaborn>=0.13          # tested 0.13.2   — eda.ipynb styling only; the pipeline does not import it
 
 # ── notebook runtime ─────────────────────────────────────────────────────────
 ipykernel>=6.0         # tested 6.30.0   — enough for VS Code / any Jupyter front end
 # notebook>=7.0        # uncomment for the standalone `jupyter notebook` server
 # jupyterlab>=4.0      # ...or JupyterLab instead
+
+# ── tests (optional; the same checks run inside main.py without them) ────────
+pytest>=8.0            # tested 9.1.1    — `pytest tests/ -q`
+# pytest-cov>=5.0      # uncomment for `pytest tests/ --cov=src`
 
 # ── deliberately absent ──────────────────────────────────────────────────────
 # lifetimes / pymc-marketing — the BTYD reference model is NOT fitted: the data has no
