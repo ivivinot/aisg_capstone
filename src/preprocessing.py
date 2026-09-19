@@ -15,9 +15,9 @@ in the docstrings point at the analysis that motivated the choice.
     Target skew 6.4, top 10% hold 38% of value    QuantileClipper with wide default
     -- the tail is the business, not noise (3)    bounds: an extrapolation guard rail,
                                                   NOT tail removal
-    Target is a power law in the features:        SafeLogTransformer + PolynomialFeatures
-    log-log linear gives R2 0.987, degree 3       + StandardScaler -- the representation
-    gives 0.9998 (7, 10)                          that beat tuned XGBoost on every metric
+    Target is a power law in the features:        the log / expand / scale / select steps,
+    log-log linear gives R2 0.987, degree 3       which now live in
+    gives 0.9998 (7, 10)                          src/feature_engineering.py
     exp(E[log y]) under-states E[y] for a         LogTargetTransformer with Duan's
     skewed target (8)                             smearing estimator
 
@@ -76,7 +76,6 @@ from sklearn.impute import KNNImputer
 from sklearn.linear_model import Ridge
 from sklearn.model_selection import KFold, cross_validate, train_test_split
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import PolynomialFeatures, StandardScaler
 
 __all__ = [
     "TARGET",
@@ -87,11 +86,8 @@ __all__ = [
     "LogTargetTransformer",
     "CategoricalEncoder",
     "DomainRuleTransformer",
-    "DerivedFeatures",
     "FrameImputer",
     "QuantileClipper",
-    "ConstantColumnDropper",
-    "SafeLogTransformer",
     "load_raw",
     "audit_dataset",
     "filter_rows",
@@ -220,9 +216,19 @@ class PreprocessConfig:
     scale: bool = True
     drop_constant_features: bool = True     # prune dead columns the expansion creates
 
-    # -- optional feature engineering (off by default: keeps the feature set
-    #    identical to the one the EDA validated) ---------------------------- #
+    # -- feature engineering (src/feature_engineering.py) -------------------- #
+    # Off by default: the six-column feature set is the one the EDA validated,
+    # and 16.3 of readme.md measures what each addition is worth.
     add_derived_features: bool = False
+    derived_features: Tuple[str, ...] | str = "none"      # named set, list, or "a,b"
+
+    # -- feature selection (src/feature_engineering.py) ---------------------- #
+    # "variance" with the default tolerance is exactly the old constant-column
+    # pruning; drop_constant_features=False forces "none".
+    feature_selection: str = "variance"     # none|variance|correlation|mutual_info|model|vif
+    select_k: Optional[int] = None          # for the supervised strategies
+    correlation_threshold: float = 0.999
+    vif_threshold: float = 6.0
 
     # -- splitting (EDA 8) --------------------------------------------------- #
     test_size: float = 0.2
@@ -236,6 +242,8 @@ class PreprocessConfig:
         _choice("binary_impute", self.binary_impute, {"most_frequent", "constant"})
         _choice("recency_policy", self.recency_policy, {"clip", "flag", "none"})
         _choice("outlier_strategy", self.outlier_strategy, {"clip", "flag", "none"})
+        _choice("feature_selection", self.feature_selection,
+                {"none", "variance", "correlation", "mutual_info", "model", "vif"})
         lo, hi = self.outlier_quantiles
         if not 0.0 <= lo < hi <= 1.0:
             raise ValueError(f"outlier_quantiles must satisfy 0 <= lo < hi <= 1, got {(lo, hi)}")
@@ -759,147 +767,6 @@ class QuantileClipper(BaseEstimator, TransformerMixin):
         return self.feature_names_out_
 
 
-class SafeLogTransformer(BaseEstimator, TransformerMixin):
-    """Natural log of the skewed numerics -- the core normalisation step.
-
-    EDA 7 established that the target is multiplicative in these features::
-
-        value = exp(b0) * x1^b1 * ... * exp(bk * loyalty) * eps
-
-    Taking logs turns that product into a sum, which is why a *linear* model on
-    logged features reaches R2 0.987 and, with polynomial terms, 0.9998 -- beating
-    tuned XGBoost and Random Forest on every metric (EDA 10). This transformer is
-    where most of the predictive work in the whole pipeline happens.
-
-    "Safe" means the floor from :class:`DomainRuleTransformer` is re-applied here,
-    so a zero or negative arriving in new data becomes a small positive number
-    instead of ``-inf``.
-    """
-
-    def __init__(
-        self,
-        columns: Sequence[str] = SKEWED_NUMERIC,
-        floor: float = 1e-3,
-        prefix: str = "log_",
-    ):
-        self.columns = columns
-        self.floor = floor
-        self.prefix = prefix
-
-    def fit(self, X, y=None):
-        X = _as_frame(X)
-        self.feature_names_in_ = np.asarray(X.columns, dtype=object)
-        self.columns_ = [c for c in self.columns if c in X.columns]
-        self.feature_names_out_ = np.asarray(
-            [f"{self.prefix}{c}" if c in self.columns_ else c for c in X.columns], dtype=object
-        )
-        return self
-
-    def transform(self, X) -> pd.DataFrame:
-        X = _as_frame(X).copy()
-        n_floored = 0
-        for col in self.columns_:
-            n_floored += int((X[col] < self.floor).sum())
-            X[col] = np.log(X[col].clip(lower=self.floor))
-        if n_floored:
-            logger.warning(
-                "safe log: %d values raised to the floor %g before log()", n_floored, self.floor
-            )
-        X.columns = list(self.feature_names_out_)
-        return X
-
-    def get_feature_names_out(self, input_features=None) -> np.ndarray:
-        return self.feature_names_out_
-
-
-class DerivedFeatures(BaseEstimator, TransformerMixin):
-    """Optional feature engineering, appended before the log step.
-
-    Off by default, so the pipeline's output matches the six-column feature set
-    the EDA validated. Two additions are worth having when it is switched on:
-
-    * ``purchase_value`` = purchases x order value -- the analyst heuristic that
-      already reaches Spearman 0.88 (readme.md 7.3, EDA 9). Any model must beat
-      it, so it is useful to carry as a column.
-    * ``recency_span`` = days_since_first - days_since_last -- the BTYD
-      ``recency`` (readme.md 3.2). Non-negative once the domain rule has run.
-
-    Both are floored so they survive the log step.
-    """
-
-    def __init__(self, floor: float = 1e-3):
-        self.floor = floor
-
-    def fit(self, X, y=None):
-        X = _as_frame(X)
-        self.feature_names_in_ = np.asarray(X.columns, dtype=object)
-        self.derived_: List[str] = []
-        if {COUNT_COL, AOV_COL} <= set(X.columns):
-            self.derived_.append("purchase_value")
-        if {FIRST_PURCHASE_COL, LAST_PURCHASE_COL} <= set(X.columns):
-            self.derived_.append("recency_span")
-        self.feature_names_out_ = np.asarray(list(X.columns) + self.derived_, dtype=object)
-        return self
-
-    def transform(self, X) -> pd.DataFrame:
-        X = _as_frame(X).copy()
-        if "purchase_value" in self.derived_:
-            X["purchase_value"] = (X[COUNT_COL] * X[AOV_COL]).clip(lower=self.floor)
-        if "recency_span" in self.derived_:
-            X["recency_span"] = (X[FIRST_PURCHASE_COL] - X[LAST_PURCHASE_COL]).clip(lower=self.floor)
-        return X[list(self.feature_names_out_)]
-
-    def get_feature_names_out(self, input_features=None) -> np.ndarray:
-        return self.feature_names_out_
-
-
-class ConstantColumnDropper(BaseEstimator, TransformerMixin):
-    """Remove features that carry no information in the training split.
-
-    Polynomial expansion turns one dead column into many: an indicator that is
-    all-zero in training (because ``--drop-invalid-recency`` removed the rows it
-    marks, or because the outlier bounds are wide enough that nothing trips them)
-    produces a constant term for every monomial it appears in -- 36 dead columns
-    from one flag at degree 3, and 335 from five. They cannot help any estimator,
-    they make coefficient tables unreadable, and a zero-variance column is a
-    division by zero waiting for any scaler that is less careful than sklearn's.
-
-    Fitted per split, so inside cross-validation each fold drops exactly the
-    columns that are dead *in that fold*.
-    """
-
-    def __init__(self, enabled: bool = True, tol: float = 0.0):
-        self.enabled = enabled
-        self.tol = tol
-
-    def fit(self, X, y=None):
-        X = _as_frame(X)
-        self.feature_names_in_ = np.asarray(X.columns, dtype=object)
-        if not self.enabled:
-            self.dropped_ = []
-        else:
-            std = X.std(ddof=0)
-            self.dropped_ = [str(c) for c in std.index[std <= self.tol]]
-            # Never hand back an empty matrix, however degenerate the input.
-            if len(self.dropped_) == X.shape[1]:
-                self.dropped_ = []
-        self.feature_names_out_ = np.asarray(
-            [c for c in X.columns if c not in set(self.dropped_)], dtype=object
-        )
-        if self.dropped_:
-            logger.info(
-                "dropped %d constant feature(s) out of %d, e.g. %s",
-                len(self.dropped_), X.shape[1], self.dropped_[:3],
-            )
-        return self
-
-    def transform(self, X) -> pd.DataFrame:
-        return _as_frame(X)[list(self.feature_names_out_)]
-
-    def get_feature_names_out(self, input_features=None) -> np.ndarray:
-        return self.feature_names_out_
-
-
 # --------------------------------------------------------------------------- #
 # Target-side transform
 # --------------------------------------------------------------------------- #
@@ -958,20 +825,26 @@ class CLVPreprocessor(BaseEstimator, TransformerMixin):
 
     Step order, and why each step sits where it does::
 
+    Cleaning, here::
+
         1. CategoricalEncoder     loyalty_program_membership -> loyalty (0/1)
         2. DomainRuleTransformer  impossible values fixed BEFORE any statistic is
                                   learned from them
         3. FrameImputer           fills learned on train only
-        4. DerivedFeatures        optional; must precede the log step so the new
-                                  columns are logged like the rest
-        5. QuantileClipper        bounds learned on train; monotone, so clipping
+        4. QuantileClipper        bounds learned on train; monotone, so clipping
                                   before or after the log is equivalent -- doing
                                   it before keeps the bounds readable in dollars
+
+    then the feature half, from src/feature_engineering.build_feature_steps::
+
+        5. DerivedFeatures        optional; before the log, so the new columns are
+                                  logged like the rest
         6. SafeLogTransformer     the multiplicative -> additive step (EDA 7)
         7. PolynomialFeatures     degree 3: the curvature the tuner rediscovered
         8. StandardScaler         puts the polynomial terms on one scale, which is
                                   what makes Ridge's single alpha meaningful
-        9. ConstantColumnDropper  prunes the dead columns the expansion can create
+        9. FeatureSelector        default "variance": drops the dead columns the
+                                  expansion creates. Stronger strategies available
 
     Because it is a transformer, it composes::
 
@@ -1014,33 +887,25 @@ class CLVPreprocessor(BaseEstimator, TransformerMixin):
             ),
         ]
 
-        log_columns = list(numeric)
-        if cfg.add_derived_features:
-            steps.append(("derive", DerivedFeatures(floor=cfg.positivity_floor)))
-            log_columns += ["purchase_value", "recency_span"]
-
         steps.append(
             (
                 "outliers",
                 QuantileClipper(
-                    columns=log_columns,
+                    columns=numeric,
                     strategy=cfg.outlier_strategy,
                     quantiles=cfg.outlier_quantiles,
                     margin=cfg.outlier_margin,
                 ),
             )
         )
-        if cfg.log_transform:
-            steps.append(
-                ("log", SafeLogTransformer(columns=log_columns, floor=cfg.positivity_floor))
-            )
-        if cfg.poly_degree > 1:
-            steps.append(
-                ("poly", PolynomialFeatures(degree=cfg.poly_degree, include_bias=False))
-            )
-        if cfg.scale:
-            steps.append(("scale", StandardScaler()))
-        steps.append(("prune", ConstantColumnDropper(enabled=cfg.drop_constant_features)))
+
+        # The feature half -- derive, log, expand, scale, select -- belongs to
+        # src/feature_engineering.py. The import is local because that module
+        # imports this one: cleaning is the lower layer and must not depend on
+        # feature engineering at import time.
+        from .feature_engineering import build_feature_steps
+
+        steps += build_feature_steps(cfg)
         return Pipeline(steps)
 
     # -- sklearn API -------------------------------------------------------- #
@@ -1052,7 +917,9 @@ class CLVPreprocessor(BaseEstimator, TransformerMixin):
         self.input_features_ = list(X.columns)
         self.pipeline_ = self._build(cfg)
         self.pipeline_.set_output(transform="pandas")
-        self.pipeline_.fit(X)
+        # y is passed through: the supervised selection strategies in
+        # src/feature_engineering.py need it, and every other step ignores it.
+        self.pipeline_.fit(X, y)
         self.feature_names_out_ = [str(c) for c in self.pipeline_[-1].get_feature_names_out()]
         self.n_features_out_ = len(self.feature_names_out_)
         logger.info(
@@ -1099,8 +966,11 @@ class CLVPreprocessor(BaseEstimator, TransformerMixin):
             report["outlier_values_out_of_range_at_fit"] = named["outliers"].n_clipped_at_fit_
         if "encode" in named:
             report["unseen_categories"] = named["encode"].unseen_categories_
-        if "prune" in named:
-            report["dropped_constant_features"] = named["prune"].dropped_
+        if "derive" in named:
+            report["derived_features"] = list(named["derive"].derived_)
+        if "select" in named:
+            report["feature_selection"] = named["select"].selection_report()
+            report["dropped_constant_features"] = named["select"].dropped_
         return report
 
     def save(self, path: str | Path) -> Path:
@@ -1304,10 +1174,17 @@ def check_transformer_behaviour(
     prep: CLVPreprocessor,
     X_train_raw: pd.DataFrame,
     X_test_raw: pd.DataFrame,
+    y_train_log=None,
     sample: int = 25,
     seed: int = 42,
 ) -> List[Check]:
-    """Invariances and edge cases, on raw rows the preprocessor has not seen."""
+    """Invariances and edge cases, on raw rows the preprocessor has not seen.
+
+    ``y_train_log`` is only needed to refit the pipeline the way it was fitted:
+    the supervised selection strategies in src/feature_engineering.py choose
+    different columns without it, which is correct behaviour and would make the
+    clone round-trip below fail for the wrong reason.
+    """
     rec = _Recorder("transformer behaviour")
     rng = np.random.default_rng(seed)
     config = prep.config_
@@ -1425,7 +1302,7 @@ def check_transformer_behaviour(
         twin = clone(prep)
         twin.set_params(config=replace(config))
         with quiet():
-            twin.fit(X_train_raw)
+            twin.fit(X_train_raw, y_train_log)
         return bool(np.allclose(twin.transform(rows).to_numpy(), baseline.to_numpy())), \
             "clone + set_params(config=...)"
 
@@ -1515,7 +1392,8 @@ def _is_default_representation(config: PreprocessConfig) -> bool:
     reference = PreprocessConfig()
     return all(getattr(config, knob) == getattr(reference, knob) for knob in (
         "numeric_features", "log_transform", "scale", "drop_constant_features",
-        "add_derived_features", "add_quality_flags", "add_missing_indicators",
+        "add_derived_features", "derived_features", "feature_selection", "select_k",
+        "add_quality_flags", "add_missing_indicators",
         "recency_policy", "outlier_strategy", "outlier_quantiles", "outlier_margin",
         "numeric_impute", "test_size", "n_strata", "random_state",
     ))

@@ -4,19 +4,25 @@
     python main.py --poly-degree 1          # plain log-linear representation
     python main.py --outlier-strategy flag  # keep raw values, append 0/1 columns
     python main.py --drop-invalid-recency   # remove the 52 impossible rows instead
+    python main.py --derived-features all   # add every engineered column
+    python main.py --compare-features       # measure what each feature set is worth
+    python main.py --feature-selection vif  # and what the wrong selection costs
     python main.py --no-stat-checks         # skip the slow cross-validated checks
     python main.py --no-validate            # process only, check nothing
 
 What it does, in order:
 
-    1. load the raw CSV
-    2. audit it -- the EDA 2 quality checks, as a JSON report
-    3. row-level filtering (off by default; see src/preprocessing.filter_rows)
-    4. split 80/20, stratified on value deciles (EDA 8)
-    5. fit the preprocessor on the TRAINING split only, transform both splits
-    6. validate the output contract: usable, finite, leakage-free
-    7. test the transformer itself: single row == batch, order and index
-       invariance, dirty-data edge cases, save/load and clone round-trips
+    1. audit the raw CSV -- the EDA 2 quality checks, as a JSON report
+    2. row-level filtering (off by default; see src/preprocessing.filter_rows)
+    3. split 80/20 stratified on value deciles, then fit the preprocessor on the
+       TRAINING split only and transform both (EDA 8)
+    4. feature engineering: the created columns and the features kept
+       (src/feature_engineering.py)
+    5. validate the output contract: usable, finite, leakage-free
+    6. test the transformer: single row == batch, order and index invariance,
+       dirty-data edge cases, save/load and clone round-trips
+    7. test the feature engineering: what was created, what the selection kept,
+       and whether the catalogue's log-space claims actually hold
     8. validate statistically: feature count per degree, the CV R2 the EDA
        measured, and a label-shuffle test whose score must collapse to zero
     9. write the processed data, the fitted pipeline and the reports to outputs/
@@ -37,6 +43,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import List
 
+import pandas as pd
+
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -55,6 +63,14 @@ from src.preprocessing import (  # noqa: E402
     load_raw,
     stratified_split,
     summarise,
+)
+from src.feature_engineering import (  # noqa: E402
+    FEATURE_SPECS,
+    SELECTION_STRATEGIES,
+    check_feature_engineering,
+    compare_feature_sets,
+    feature_report,
+    resolve_derived,
 )
 
 log = get_logger("capstone")
@@ -99,13 +115,22 @@ def add_preprocessing_arguments(p: argparse.ArgumentParser) -> argparse.Argument
                    help="widen those bounds by this fraction, so the clip bites only on values "
                         "well beyond anything seen in training; 0 disables the margin")
 
+    g = p.add_argument_group("feature engineering (src/feature_engineering.py)")
+    g.add_argument("--derived-features", nargs="?", const="default", default="none",
+                   metavar="SET",
+                   help="engineered columns to add: none | default | independent | all, "
+                        "or a comma-separated list of names")
+    g.add_argument("--feature-selection", choices=list(SELECTION_STRATEGIES), default="variance",
+                   help="how to select among the expanded features; variance is the old "
+                        "constant-column pruning, vif is measurably the wrong tool here")
+    g.add_argument("--select-k", type=int, default=None,
+                   help="how many features the supervised strategies keep")
+
     g = p.add_argument_group("normalisation (EDA 7, 10)")
     g.add_argument("--no-log", action="store_true", help="skip the log transform (not recommended)")
     g.add_argument("--poly-degree", type=int, default=3,
                    help="polynomial expansion of the logged features; the tuner chose 3")
     g.add_argument("--no-scale", action="store_true", help="skip standardisation")
-    g.add_argument("--derived-features", action="store_true",
-                   help="add purchase_value and recency_span before the log step")
 
     g = p.add_argument_group("split and run")
     g.add_argument("--test-size", type=float, default=0.2)
@@ -121,11 +146,18 @@ def add_validation_arguments(p: argparse.ArgumentParser) -> argparse.ArgumentPar
     g.add_argument("--no-validate", action="store_true",
                    help="skip every check: process the data and write it out")
     g.add_argument("--no-tests", action="store_true",
-                   help="skip the transformer behaviour tests (stage 5)")
+                   help="skip the transformer behaviour tests (stage 6)")
     g.add_argument("--no-stat-checks", action="store_true",
-                   help="skip the cross-validated checks (stage 6), the slowest part")
+                   help="skip the cross-validated checks (stage 8), the slowest part")
     g.add_argument("--cv-folds", type=int, default=5,
                    help="folds used by the statistical checks")
+    g.add_argument("--no-feature-tests", action="store_true",
+                   help="skip the feature-engineering checks (stage 7)")
+    g.add_argument("--feature-report", action="store_true",
+                   help="print and save per-feature diagnostics")
+    g.add_argument("--compare-features", action="store_true",
+                   help="measure each feature set against Ridge and a Random Forest "
+                        "(a few seconds)")
     return p
 
 
@@ -152,7 +184,10 @@ def config_from_args(args: argparse.Namespace) -> PreprocessConfig:
         log_transform=not args.no_log,
         poly_degree=args.poly_degree,
         scale=not args.no_scale,
-        add_derived_features=args.derived_features,
+        add_derived_features=bool(resolve_derived(args.derived_features)),
+        derived_features=args.derived_features,
+        feature_selection=args.feature_selection,
+        select_k=args.select_k,
         test_size=args.test_size,
         n_strata=args.n_strata,
         random_state=args.seed,
@@ -242,13 +277,15 @@ def run_preprocessing(args: argparse.Namespace, config: PreprocessConfig) -> dic
     X_test_raw = test_raw.drop(columns=[config.target])
     y_train, y_test = train_raw[config.target], test_raw[config.target]
 
-    prep = CLVPreprocessor(config).fit(X_train_raw)
-    X_train = prep.transform(X_train_raw)
-    X_test = prep.transform(X_test_raw)
-
+    # The target is prepared first: the supervised selection strategies in
+    # src/feature_engineering.py are fitted on log(value), like every model here.
     target_tf = LogTargetTransformer().fit(y_train)
     y_train_log = target_tf.transform(y_train)
     y_test_log = target_tf.transform(y_test)
+
+    prep = CLVPreprocessor(config).fit(X_train_raw, y_train_log)
+    X_train = prep.transform(X_train_raw)
+    X_test = prep.transform(X_test_raw)
 
     banner(3, "PREPROCESSING -- fitted on the training split only")
     report = prep.quality_report()
@@ -270,6 +307,8 @@ def run_preprocessing(args: argparse.Namespace, config: PreprocessConfig) -> dic
                   f"   from [{raw_lo:,.3f}, {raw_hi:,.3f}], {n} train values beyond")
     print(f"\n  first 8 model features: {prep.feature_names_out_[:8]}")
 
+    print_feature_engineering(args, config, prep, X_train, y_train_log, train_raw)
+
     return {
         "audit": audit, "removed": removed, "prep": prep, "prep_report": report,
         "train_raw": train_raw,
@@ -280,33 +319,97 @@ def run_preprocessing(args: argparse.Namespace, config: PreprocessConfig) -> dic
     }
 
 
+def show(frame: pd.DataFrame, decimals: int = 4, indent: str = "  ") -> None:
+    """Print a table indented under its section heading."""
+    print("\n".join(indent + line for line in frame.round(decimals).to_string().splitlines()))
+
+
+def print_feature_engineering(args: argparse.Namespace, config: PreprocessConfig,
+                              prep: CLVPreprocessor, X_train: pd.DataFrame,
+                              y_train_log, train_raw: pd.DataFrame) -> None:
+    """Stage 4: what was created, what was kept, and -- on request -- what it was worth."""
+    banner(4, "FEATURE ENGINEERING -- the columns created and the features kept")
+    report = prep.quality_report()
+    created = report.get("derived_features", [])
+
+    if not created:
+        print("  derived features: none")
+        print("  The six raw columns are the feature set the EDA validated. Add engineered")
+        print("  ones with --derived-features default|independent|all, and measure what")
+        print("  they are worth with --compare-features (readme.md 16.3).")
+    else:
+        print(f"  derived features ({len(created)}), created before the log step:\n")
+        print(f"    {'name':22s} {'formula':26s} {'kind':11s} new in log space?")
+        for name in created:
+            spec = FEATURE_SPECS[name]
+            verdict = "yes" if spec.new_in_log_space else "no -- a linear combination of logs"
+            print(f"    {spec.name:22s} {spec.formula:26s} {spec.kind:11s} {verdict}")
+        print("\n  A product or ratio of logged columns is a weighted sum of columns the model")
+        print("  already has, so it cannot help the linear family -- but a tree cannot form a")
+        print("  product, so the same column can help the ensembles (--compare-features).")
+
+    selection = report.get("feature_selection")
+    if selection:
+        dropped = (f", dropped e.g. {selection['dropped'][:3]}"
+                   if selection["n_dropped"] else "")
+        print(f"\n  selection: {selection['strategy']} -- kept {selection['n_out']} of "
+              f"{selection['n_in']} features{dropped}")
+        if selection["strategy"] != selection["requested_strategy"]:
+            print(f"  (requested {selection['requested_strategy']}; it fell back, see the log)")
+
+    if args.feature_report:
+        print("\n  per-feature diagnostics, top 12 by |Spearman| against the target:\n")
+        show(feature_report(X_train, y_train_log, top=12))
+        print("\n  A high VIF here is the polynomial basis working as designed, not a defect.")
+
+    if args.compare_features:
+        print("\n  measured: mean 5-fold CV R2 on log(value) for each feature set\n")
+        show(compare_feature_sets(train_raw, config), decimals=5)
+        print("\n  Read the two model columns against each other: products and ratios move")
+        print("  the Random Forest and leave Ridge where it was, which is exactly what a")
+        print("  multiplicative target in log space predicts.")
+
+
 def run_validation(args: argparse.Namespace, config: PreprocessConfig, data: dict) -> dict:
-    """Stages 6-8: the three groups of checks defined in src/preprocessing.py."""
+    """Stages 5-8: the check groups from src/preprocessing.py and src/feature_engineering.py."""
     checks: List[Check] = []
 
-    banner(4, "OUTPUT VALIDATION -- the processed data must be usable and leakage-free")
+    banner(5, "OUTPUT VALIDATION -- the processed data must be usable and leakage-free")
     contract = check_output_contract(data["X_train"], data["X_test"],
                                      data["y_train"], data["y_test"], data["prep"])
     print_checks(contract)
     checks += contract
 
     if args.no_tests:
-        banner(5, "TRANSFORMER TESTS -- skipped (--no-tests)")
+        banner(6, "TRANSFORMER TESTS -- skipped (--no-tests)")
     else:
-        banner(5, "TRANSFORMER TESTS -- the same rows, put through the pipeline sideways")
+        banner(6, "TRANSFORMER TESTS -- the same rows, put through the pipeline sideways")
         print("  Each case runs on raw test rows the preprocessor was not fitted on. The")
         print("  first one is the one that matters most: if a single row does not score")
         print("  exactly as it does inside a batch, predict.py disagrees with the")
         print("  evaluation and nothing downstream reveals it.\n")
         behaviour = check_transformer_behaviour(data["prep"], data["X_train_raw"],
-                                                data["X_test_raw"], seed=config.random_state)
+                                                data["X_test_raw"], data["y_train_log"],
+                                                seed=config.random_state)
         print_checks(behaviour)
         checks += behaviour
 
-    if args.no_stat_checks:
-        banner(6, "STATISTICAL VALIDATION -- skipped (--no-stat-checks)")
+    if args.no_feature_tests:
+        banner(7, "FEATURE-ENGINEERING TESTS -- skipped (--no-feature-tests)")
     else:
-        banner(6, "STATISTICAL VALIDATION -- is this still the pipeline the EDA measured?")
+        banner(7, "FEATURE-ENGINEERING TESTS -- the created columns and the selection")
+        print("  The third check does not trust the catalogue in src/feature_engineering.py,")
+        print("  it measures it: a product or ratio must add no rank to the logged inputs,")
+        print("  and a difference or threshold must add exactly one.\n")
+        features = check_feature_engineering(data["prep"], data["X_train_raw"],
+                                             data["X_test_raw"], data["y_train_log"])
+        print_checks(features)
+        checks += features
+
+    if args.no_stat_checks:
+        banner(8, "STATISTICAL VALIDATION -- skipped (--no-stat-checks)")
+    else:
+        banner(8, "STATISTICAL VALIDATION -- is this still the pipeline the EDA measured?")
         print(f"  {args.cv_folds}-fold CV with the preprocessor refitted inside every fold.")
         print("  The last check refits it on a shuffled target, where any score above")
         print("  zero would mean information about y had reached the features.\n")
@@ -348,6 +451,15 @@ def save_everything(args: argparse.Namespace, config: PreprocessConfig,
         json.dumps(validation, indent=2, default=str), encoding="utf-8")
     written.append(outdir / "validation_report.json")
 
+    if args.feature_report:
+        feature_report(data["X_train"], data["y_train_log"]).to_csv(
+            outdir / "feature_report.csv")
+        written.append(outdir / "feature_report.csv")
+    if args.compare_features:
+        compare_feature_sets(data["train_raw"], config).to_csv(
+            outdir / "feature_comparison.csv")
+        written.append(outdir / "feature_comparison.csv")
+
     (outdir / "preprocessing_report.json").write_text(
         json.dumps({"config": asdict(config), "rows_removed": data["removed"],
                     "fitted_pipeline": data["prep_report"],
@@ -384,7 +496,7 @@ def main(argv=None) -> int:
 
     if not args.no_save:
         written = save_everything(args, config, data, validation)
-        banner(7, "ARTIFACTS")
+        banner(9, "ARTIFACTS")
         for path in written:
             print(f"  {path}")
         print("\n  Reuse on new customers:")
