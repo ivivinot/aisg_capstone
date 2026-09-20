@@ -56,11 +56,15 @@ whatever the data does.
 Tuning, and the objection it answers
 ------------------------------------
 ``tune=True`` (``python main.py --tune-advanced``) gives each architecture a bounded
-randomised search before the comparison, because "keep the baseline" is a much
-weaker claim about models left at their defaults. The search is scored on the
-*headline metric itself* rather than a proxy -- tuning a regression on R2 while
-ranking it by Spearman optimises the wrong thing on a heavy-tailed target -- and
-the verdict states which of the two regimes produced it.
+search before the comparison, because "keep the baseline" is a much weaker claim
+about models left at their defaults. The verdict states which of the two regimes
+produced it.
+
+The search itself is **not** implemented here: cross-validation strategy,
+hyperparameter spaces and the over/underfitting diagnosis for *every* model in
+the project live in :mod:`src.model_optimization`. Splitting them across modules
+is how the baselines and the challengers end up optimised by different protocols,
+which is the quiet way to make a comparison meaningless.
 
 The cost side is reported next to the accuracy side, because "3% better for 40x the
 fit time and a dependency" is a decision, not a detail.
@@ -69,7 +73,6 @@ fit time and a dependency" is a decision, not a detail.
 from __future__ import annotations
 
 import logging
-import warnings
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -477,177 +480,6 @@ def fold_scores(
     return np.asarray(scores, dtype=float)
 
 
-def search_spaces(task: str = "regression") -> Dict[str, dict]:
-    """Randomised-search space per architecture, for :func:`tune_advanced`.
-
-    Deliberately modest -- 20 draws each, ranges around the defaults rather than
-    the whole plausible universe. The point is not to squeeze out the last
-    thousandth: it is to answer the reviewer who says *"your booster lost because
-    you left it at the defaults"*. If a bounded search does not close the gap,
-    the architecture is what is losing.
-
-    Every key is prefixed ``model__`` because the estimator sits at the end of a
-    pipeline whose earlier steps are the shared preprocessing.
-    """
-    from scipy.stats import loguniform, randint, uniform
-
-    if task == "clustering":
-        # No labels to optimise against, so the "search" is over the structural
-        # choice each method actually exposes, scored by silhouette.
-        return {
-            "gaussian mixture": {"model__n_components": [2, 3, 4, 5, 6],
-                                 "model__covariance_type": ["full", "tied", "diag"]},
-            "DBSCAN": {"model__eps": uniform(0.3, 1.5),
-                       "model__min_samples": randint(3, 20)},
-        }
-
-    boosting = {
-        "model__n_estimators": randint(200, 900),
-        "model__learning_rate": loguniform(0.01, 0.3),
-        "model__max_depth": randint(2, 8),
-        "model__subsample": uniform(0.6, 0.4),
-    }
-    network = {
-        "model__hidden_layer_sizes": [(32,), (64,), (64, 32), (128, 64), (128, 64, 32)],
-        "model__alpha": loguniform(1e-5, 1e-1),
-        "model__learning_rate_init": loguniform(1e-4, 1e-2),
-    }
-    return {"gradient boosting": boosting, "neural network (MLP)": network}
-
-
-def tune_advanced(
-    models: Dict[str, object],
-    X: pd.DataFrame,
-    y=None,
-    task: str = "regression",
-    cv=None,
-    n_iter: int = 20,
-    random_state: int = 42,
-    n_jobs: int = -1,
-) -> Tuple[Dict[str, object], pd.DataFrame]:
-    """Randomised search per architecture; returns the tuned models and what was found.
-
-    The search runs **inside the same folds** the comparison later uses, which is
-    not quite nested cross-validation: the tuned model has seen every fold's
-    training rows through the search. That is the standard shortcut and it is
-    optimistic, so the returned table records it -- and the comparison stays
-    honest in the direction that matters here, because the *advantage* it grants
-    goes to the advanced models, and they still have to beat the baseline.
-    """
-    from sklearn.model_selection import RandomizedSearchCV
-
-    cv = cv or _default_cv(task, y)
-    spaces = search_spaces(task)
-    tuned: Dict[str, object] = {}
-    rows = []
-
-    for name, model in models.items():
-        space = spaces.get(name)
-        if not space:
-            tuned[name] = model
-            continue
-        if task == "clustering":
-            tuned[name], best = _search_clustering(name, model, X, space, cv_folds=0)
-            rows.append({"model": name, **best})
-            continue
-
-        _assert_tunable(name, model, space)
-        search = RandomizedSearchCV(model, space, n_iter=n_iter, cv=cv,
-                                    scoring=_search_scoring(task), random_state=random_state,
-                                    n_jobs=n_jobs, refit=True, error_score="raise")
-        with quiet(), warnings.catch_warnings():
-            # A search fits hundreds of models; convergence and deprecation
-            # warnings from the candidates are noise, not findings.
-            warnings.simplefilter("ignore")
-            search.fit(X, np.asarray(y).ravel())
-        tuned[name] = search.best_estimator_
-        rows.append({"model": name, "n_iter": n_iter,
-                     "cv_score": float(search.best_score_),
-                     "best_params": _readable(search.best_params_)})
-        logger.info("tuned %-24s search score %.4f", name, search.best_score_)
-
-    table = pd.DataFrame(rows).set_index("model") if rows else pd.DataFrame()
-    return tuned, table
-
-
-def _search_scoring(task: str):
-    """Search on the metric the comparison will be judged by, not a proxy for it.
-
-    This looks pedantic and is not: scoring a regression search by R2 while the
-    leaderboard ranks by Spearman optimises the wrong thing, and on a heavy-tailed
-    target the two disagree -- R2 chases the few largest customers, Spearman cares
-    only about order. A model tuned on R2 can come back *worse* on the metric that
-    decides the comparison, which is a tuning artefact masquerading as a finding.
-    """
-    if task == "classification":
-        return "f1_macro"
-
-    from scipy import stats
-    from sklearn.metrics import make_scorer
-
-    def spearman(y_true, y_pred) -> float:
-        if np.allclose(y_pred, y_pred[0]):
-            return 0.0
-        return float(stats.spearmanr(y_pred, y_true)[0])
-
-    return make_scorer(spearman)
-
-
-def _assert_tunable(name: str, model, space: dict) -> None:
-    """Every searched parameter must actually exist on the estimator.
-
-    scikit-learn raises for an unknown ``Pipeline`` parameter, but an estimator
-    that accepts arbitrary keywords -- XGBoost does -- will swallow a misspelled
-    or mis-prefixed one and carry on at its defaults. A search that silently
-    tunes nothing is worse than no search, so the names are checked up front.
-    """
-    available = set(model.get_params(deep=True))
-    unknown = [key for key in space if key not in available]
-    if unknown:
-        raise ValueError(f"{name}: search parameters not present on the estimator: "
-                         f"{unknown}. Available example: 'model__<param>'.")
-
-
-def _search_clustering(name: str, model, X: pd.DataFrame, space: dict, cv_folds: int = 0):
-    """Grid-search a clusterer by silhouette -- there is no held-out score to use."""
-    from sklearn.metrics import silhouette_score
-    from sklearn.model_selection import ParameterGrid, ParameterSampler
-
-    frame = pd.DataFrame(X)
-    try:
-        candidates = list(ParameterGrid(space))
-    except TypeError:                              # distributions, not lists
-        candidates = list(ParameterSampler(space, n_iter=12, random_state=42))
-
-    best_model, best_score, best_params = model, -np.inf, {}
-    for params in candidates:
-        candidate = clone(model).set_params(**params)
-        try:
-            with quiet():
-                labels = (candidate.fit_predict(frame) if hasattr(candidate, "fit_predict")
-                          else candidate.fit(frame).predict(frame))
-            if len(np.unique(labels)) < 2:
-                continue
-            score = float(silhouette_score(frame, labels))
-        except Exception:                          # noqa: BLE001 - a bad corner of the grid
-            continue
-        if score > best_score:
-            best_model, best_score, best_params = candidate, score, params
-
-    return best_model, {"n_iter": len(candidates), "cv_score": best_score,
-                        "best_params": _readable(best_params)}
-
-
-def _readable(params: dict) -> dict:
-    """Search results, printable: numpy scalars and tuples become plain values."""
-    out = {}
-    for key, value in params.items():
-        name = key.replace("model__", "")
-        out[name] = round(float(value), 5) if isinstance(value, (float, np.floating)) \
-            else (int(value) if isinstance(value, (int, np.integer)) else str(value))
-    return out
-
-
 def evaluate_advanced(
     X: pd.DataFrame,
     y=None,
@@ -663,9 +495,12 @@ def evaluate_advanced(
 ) -> AdvancedResults:
     """Fit, score and time the advanced models -- nothing compared yet.
 
-    With ``tune=True`` each architecture gets a bounded randomised search first
-    (:func:`tune_advanced`), so a later "the baseline won" is a statement about
-    architectures rather than about defaults.
+    With ``tune=True`` each architecture gets a bounded search first, so a later
+    "the baseline won" is a statement about architectures rather than about
+    defaults. The search itself lives in :mod:`src.model_optimization`, which
+    owns cross-validation and tuning for *every* model in the project -- keeping
+    it in one place is what stops the baselines and the challengers from being
+    optimised by subtly different protocols.
     """
     task = task or infer_task(y)
     models = build_advanced_models(task, preprocessor=preprocessor, include=include,
@@ -674,8 +509,13 @@ def evaluate_advanced(
 
     tuning = pd.DataFrame()
     if tune:
-        models, tuning = tune_advanced(models, X, y, task=task, cv=cv, n_iter=n_iter,
-                                       random_state=build_kwargs.get("random_state", 42))
+        if __package__ in (None, ""):                            # pragma: no cover
+            from src.model_optimization import tune_models
+        else:
+            from .model_optimization import tune_models
+
+        models, tuning = tune_models(models, X, y, task=task, cv=cv, n_iter=n_iter,
+                                     random_state=build_kwargs.get("random_state", 42))
 
     rows, predictions, folds = [], {}, {}
     for name, model in models.items():

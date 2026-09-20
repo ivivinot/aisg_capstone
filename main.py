@@ -11,6 +11,9 @@
     python main.py --baseline-catalogue     # the baselines for every task, then exit
     python main.py --architectures          # what each advanced model assumes, then exit
     python main.py --no-advanced            # skip the architecture comparison
+    python main.py --cv-strategy repeated   # shrink fold noise at a linear cost
+    python main.py --search-method halving  # successive halving instead of random
+    python main.py --no-optimize            # skip tuning, diagnosis and selection
     python main.py --no-baselines           # skip the baseline ladder
     python main.py --no-stat-checks         # skip the slow cross-validated checks
     python main.py --no-validate            # process only, check nothing
@@ -34,7 +37,10 @@ What it does, in order:
        the metrics and benchmark the cost of the models a real one must beat
    10. run two further architectures (src/advanced_models.py) on the same folds,
        compare them with the ladder fold by fold, and write the comparison up
-   11. write the processed data, the fitted pipeline and the reports to outputs/
+   11. optimise every developed model (src/model_optimization.py): fold scheme,
+       hyperparameter search, over/underfit diagnosis, one-standard-error
+       selection, and one look at the held-out split
+   12. write the processed data, the fitted pipeline and the reports to outputs/
 
 Checks are collected, not raised, so one run reports every failure -- and the
 process exits non-zero if anything failed, which makes this usable as a gate.
@@ -77,12 +83,21 @@ from src.preprocessing import (  # noqa: E402
 )
 from src.models import (  # noqa: E402
     BaselineResults,
+    build_baselines,
     evaluate_baselines,
     infer_task,
     metric_guide,
     spec_table,
 )
-from src.advanced_models import ADVANCED_SPECS, run_comparison  # noqa: E402
+from src.advanced_models import ADVANCED_SPECS, build_advanced_models, run_comparison  # noqa: E402
+from src.model_optimization import (  # noqa: E402
+    CV_STRATEGIES,
+    SEARCH_METHODS,
+    search_space_for,
+    check_optimization,
+    optimise_models,
+    validate_final_model,
+)
 from src.feature_engineering import (  # noqa: E402
     FEATURE_SPECS,
     SELECTION_STRATEGIES,
@@ -219,6 +234,23 @@ def add_advanced_arguments(p: argparse.ArgumentParser) -> argparse.ArgumentParse
     return p
 
 
+def add_optimization_arguments(p: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """The optimization flags (src/model_optimization.py)."""
+    g = p.add_argument_group("model optimization (src/model_optimization.py)")
+    g.add_argument("--no-optimize", action="store_true",
+                   help="skip cross-validated tuning, the over/underfit diagnosis and "
+                        "the final selection (stage 11)")
+    g.add_argument("--cv-strategy", choices=list(CV_STRATEGIES), default="auto",
+                   help="fold scheme; auto stratifies regression folds on value deciles")
+    g.add_argument("--search-method", choices=list(SEARCH_METHODS), default="random",
+                   help="how the hyperparameter space is explored")
+    g.add_argument("--optimize-iter", type=int, default=15,
+                   help="draws per model for the optimization stage")
+    g.add_argument("--no-learning-curve", action="store_true",
+                   help="skip the learning curve of the selected model")
+    return p
+
+
 def parse_args(argv=None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Preprocess the capstone CLV dataset, then test and validate the result.",
@@ -228,6 +260,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     add_validation_arguments(p)
     add_baseline_arguments(p)
     add_advanced_arguments(p)
+    add_optimization_arguments(p)
     return p.parse_args(argv)
 
 
@@ -548,6 +581,70 @@ def run_baseline_stage(args: argparse.Namespace, config: PreprocessConfig,
     return results
 
 
+def run_optimization_stage(args: argparse.Namespace, config: PreprocessConfig,
+                           data: dict, task: str):
+    """Stage 11: cross-validate, tune, diagnose the fit, select, and validate once.
+
+    Every developed model goes in together -- the baselines from ``src/models.py``
+    and the two architectures from ``src/advanced_models.py`` -- because a
+    protocol applied to only half the field cannot be used to choose between
+    them. The held-out split is opened here for the final number, and nowhere
+    else in ``main.py``.
+    """
+    banner(11, "MODEL OPTIMIZATION -- folds, search, fit diagnosis, final choice")
+    preprocessor = CLVPreprocessor(replace(config, poly_degree=args.baseline_poly_degree))
+    models = {**build_baselines(task, preprocessor=preprocessor),
+              **build_advanced_models(task, preprocessor=preprocessor)}
+    tunable = [name for name in models if search_space_for(name, task)]
+    print(f"  {len(models)} developed models, {len(tunable)} with something to tune")
+    print(f"  cross-validation: {args.cv_strategy}   search: {args.search_method}, "
+          f"{args.optimize_iter} draws\n")
+
+    results = optimise_models(models, data["X_train_raw"], data["y_train"], task=task,
+                              strategy=args.cv_strategy, method=args.search_method,
+                              n_iter=args.optimize_iter,
+                              learning_curves=not args.no_learning_curve,
+                              random_state=config.random_state)
+
+    print(f"  1. FOLDS -- {results.cv!r}\n")
+    show(results.cv_folds)
+
+    print("\n  2. SEARCH -- best score per model\n")
+    searched = results.tuning[results.tuning["method"] != "none"]
+    show(searched[["method", "n_candidates", "cv_score", "cv_score_sd", "best_params"]])
+
+    if len(results.diagnosis):
+        print("\n  3. FIT DIAGNOSIS -- training score against cross-validated score\n")
+        show(results.diagnosis[["model", "train_score", "cv_score", "gap", "verdict"]]
+             .set_index("model"))
+        verdicts = results.diagnosis["verdict"].value_counts().to_dict()
+        print(f"\n  {verdicts}")
+        for _, row in results.diagnosis.iterrows():
+            if row["verdict"] != "balanced":
+                print(f"    {row['model']}: {row['action']}")
+
+    selection = results.selection
+    print(f"\n  4. SELECTION -- one-standard-error rule")
+    print(f"     best by score:  {selection['best_by_score']} "
+          f"({selection['best_score']:.4f} +/- {selection['standard_error']:.4f})")
+    print(f"     within 1 SE:    {', '.join(selection['within_one_se'])}")
+    print(f"     chosen:         {results.final_name}, trading "
+          f"{selection['traded_accuracy']:+.4f} for a simpler model")
+
+    if len(results.learning_curve):
+        print("\n     learning curve for the chosen model:\n")
+        show(results.learning_curve)
+
+    validation = validate_final_model(results, data["X_train_raw"], data["y_train"],
+                                      data["X_test_raw"], data["y_test"])
+    print(f"\n  5. HELD-OUT VALIDATION\n     {validation['verdict']}")
+
+    results.checks = check_optimization(results)
+    print("\n  Checks:")
+    print_checks(results.checks)
+    return results
+
+
 def run_advanced_stage(args: argparse.Namespace, config: PreprocessConfig,
                        data: dict, baselines: BaselineResults):
     """Stage 10: two further architectures, compared with the ladder fold by fold.
@@ -607,7 +704,7 @@ def run_advanced_stage(args: argparse.Namespace, config: PreprocessConfig,
 def save_everything(args: argparse.Namespace, config: PreprocessConfig,
                     data: dict, validation: dict,
                     baselines: "BaselineResults | None" = None,
-                    advanced=None) -> list:
+                    advanced=None, optimization=None) -> list:
     """Write the processed data, the fitted pipeline and the reports."""
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -672,6 +769,19 @@ def save_everything(args: argparse.Namespace, config: PreprocessConfig,
         written.append(outdir / "advanced_report.json")
         if not args.no_report:
             written.append(outdir / "advanced_models_report.md")
+
+    if optimization is not None:
+        optimization.tuning.to_csv(outdir / "hyperparameter_search.csv")
+        written.append(outdir / "hyperparameter_search.csv")
+        if len(optimization.diagnosis):
+            optimization.diagnosis.to_csv(outdir / "fit_diagnosis.csv", index=False)
+            written.append(outdir / "fit_diagnosis.csv")
+        if len(optimization.learning_curve):
+            optimization.learning_curve.to_csv(outdir / "learning_curve.csv")
+            written.append(outdir / "learning_curve.csv")
+        (outdir / "optimization_report.json").write_text(
+            json.dumps(optimization.to_dict(), indent=2, default=str), encoding="utf-8")
+        written.append(outdir / "optimization_report.json")
     return written
 
 
@@ -743,11 +853,19 @@ def main(argv=None) -> int:
             advanced = run_advanced_stage(args, config, data, baselines)
             checks += advanced.checks
 
+    optimization = None
+    if not args.no_optimize:
+        optimization = run_optimization_stage(args, config, data,
+                                              baselines.task if baselines else
+                                              infer_task(data["y_train"]))
+        checks += optimization.checks
+
     validation = print_tally(checks) if checks else empty_summary()
 
     if not args.no_save:
-        written = save_everything(args, config, data, validation, baselines, advanced)
-        banner(11, "ARTIFACTS")
+        written = save_everything(args, config, data, validation, baselines, advanced,
+                                  optimization)
+        banner(12, "ARTIFACTS")
         for path in written:
             print(f"  {path}")
         print("\n  Reuse on new customers:")
