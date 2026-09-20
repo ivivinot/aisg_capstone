@@ -1,0 +1,30 @@
+{
+  "rows": 1000,
+  "columns": 7,
+  "duplicate_rows": 0,
+  "missing_cells_total": 0,
+  "missing_by_column": {},
+  "target": {
+    "min": 58.64,
+    "median": 536.355,
+    "max": 16797.34,
+    "skew": 6.402871590200966,
+    "skew_of_log": 0.3114734043356508,
+    "zero_value_customers": 0,
+    "non_positive": 0,
+    "top_decile_value_share": 0.3807561115316862
+  },
+  "domain_violations": {
+    "last_purchase_before_first": 52,
+    "non_integer_purchase_count": 988,
+    "purchase_count_below_one": 143,
+    "non_positive_in_logged_columns": {}
+  },
+  "feature_skew": {
+    "total_purchase_count": 10.791447431400323,
+    "average_order_value": 3.095508202634332,
+    "days_since_first_purchase": 1.1527555131194829,
+    "days_since_last_purchase": 1.4604257770250864,
+    "product_category_diversity": 0.586754407094928
+  }
+}

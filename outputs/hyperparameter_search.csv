@@ -1,0 +1,11 @@
+model,method,n_candidates,cv_score,best_params,note,cv_score_sd
+mean,none,0,,{},nothing to tune,
+median,none,0,,{},nothing to tune,
+heuristic (product of two columns),none,0,,{},nothing to tune,
+linear regression,none,0,,{},nothing to tune,
+linear regression on log(y),none,0,,{},nothing to tune,
+ridge on log(y),random,15,0.992472898081514,{'alpha': 17.71885},,0.0014236738939730144
+decision tree (depth 3),random,15,0.9388177065231803,"{'max_depth': 8, 'min_samples_leaf': 4}",,0.0062514509823024976
+k-NN (k=10),random,15,0.9714301790002488,"{'n_neighbors': 13, 'weights': 'distance'}",,0.0071506827986160685
+gradient boosting,random,15,0.9760604308081042,"{'learning_rate': 0.01218, 'max_depth': 6, 'max_iter': 299}","renamed for this implementation: {'n_estimators': 'max_iter'}; no counterpart here, dropped: ['subsample']",0.0036236328250738403
+neural network (MLP),random,15,0.9675771906607562,"{'alpha': 0.07579, 'hidden_layer_sizes': '(128, 64)', 'learning_rate_init': 0.00754}",,0.024479874315976986

@@ -1,0 +1,306 @@
+{
+  "best_model": "Polynomial on logs + Ridge",
+  "representation": {
+    "log_transform": true,
+    "poly_degree": 3,
+    "scale": true
+  },
+  "estimator": "Ridge(alpha=np.float64(0.0018997763474111276))",
+  "smearing_factor": 1.000021360540648,
+  "cv_leaderboard": [
+    {
+      "model": "Polynomial on logs + Ridge",
+      "spearman": 0.9964977054241224,
+      "norm_gini": 0.9975937441822954,
+      "top_decile_capture": 0.37003901336487793,
+      "decile_mape": 0.007272518610681282,
+      "mae_raw": 47.627579421502375,
+      "r2_raw": 0.9876954337270905,
+      "r2_log": 0.9939961108259134,
+      "rmse_log": 0.06648810903681725
+    },
+    {
+      "model": "SVR (RBF)",
+      "spearman": 0.9955270984274246,
+      "norm_gini": 0.9944111660824245,
+      "top_decile_capture": 0.3687783902213295,
+      "decile_mape": 0.02140616331713277,
+      "mae_raw": 67.26064530461805,
+      "r2_raw": 0.8724368793124054,
+      "r2_log": 0.9860991993416374,
+      "rmse_log": 0.10116902294712406
+    },
+    {
+      "model": "Linear (log features)",
+      "spearman": 0.992911516184926,
+      "norm_gini": 0.9949018121567671,
+      "top_decile_capture": 0.36940847913599206,
+      "decile_mape": 0.01910970207723702,
+      "mae_raw": 75.12304628906254,
+      "r2_raw": 0.9649886132783793,
+      "r2_log": 0.9866141900374537,
+      "rmse_log": 0.09927730416392146
+    },
+    {
+      "model": "XGBoost",
+      "spearman": 0.9872069837672441,
+      "norm_gini": 0.9898403871844356,
+      "top_decile_capture": 0.3652584883992957,
+      "decile_mape": 0.03058138136521347,
+      "mae_raw": 110.33834214683156,
+      "r2_raw": 0.8931276957873855,
+      "r2_log": 0.9726750216751378,
+      "rmse_log": 0.14184288666968278
+    },
+    {
+      "model": "HistGradientBoosting",
+      "spearman": 0.9852759885399351,
+      "norm_gini": 0.9878508183007876,
+      "top_decile_capture": 0.36670672703182483,
+      "decile_mape": 0.02884459978188969,
+      "mae_raw": 125.74910101101224,
+      "r2_raw": 0.7992715595181762,
+      "r2_log": 0.9663439217518693,
+      "rmse_log": 0.15741981670559207
+    },
+    {
+      "model": "Random Forest",
+      "spearman": 0.9796379601331953,
+      "norm_gini": 0.9844342250760203,
+      "top_decile_capture": 0.36181002112094646,
+      "decile_mape": 0.04923960573105327,
+      "mae_raw": 136.50288959546245,
+      "r2_raw": 0.8092503734914678,
+      "r2_log": 0.9545651320743619,
+      "rmse_log": 0.1829036123962574
+    },
+    {
+      "model": "k-NN (k=10)",
+      "spearman": 0.9673820267771751,
+      "norm_gini": 0.9779160983122116,
+      "top_decile_capture": 0.3630566245442919,
+      "decile_mape": 0.09014025777243337,
+      "mae_raw": 172.26003082331678,
+      "r2_raw": 0.6864592517120781,
+      "r2_log": 0.9153953865980854,
+      "rmse_log": 0.2495885572934749
+    },
+    {
+      "model": "Linear (raw features)",
+      "spearman": 0.9621950068929213,
+      "norm_gini": 0.9684820434949059,
+      "top_decile_capture": 0.3480514239651684,
+      "decile_mape": 0.23014133639623147,
+      "mae_raw": 500.50370979222606,
+      "r2_raw": -24.23248074981898,
+      "r2_log": 0.8494457844502322,
+      "rmse_log": 0.3329462350043084
+    },
+    {
+      "model": "Baseline: purchases x AOV",
+      "spearman": 0.8781259800186327,
+      "norm_gini": 0.9121766498001468,
+      "top_decile_capture": 0.34155561003403506,
+      "decile_mape": 0.7842546136345152,
+      "mae_raw": 726.2265157857933,
+      "r2_raw": -16.098202412668567,
+      "r2_log": -3.038411315769795,
+      "rmse_log": 1.7243797855567917
+    },
+    {
+      "model": "Baseline: train mean",
+      "spearman": NaN,
+      "norm_gini": -0.07563456056686732,
+      "top_decile_capture": 0.09708587140046944,
+      "decile_mape": 0.16950062270603466,
+      "mae_raw": 569.730443125,
+      "r2_raw": 0.0,
+      "r2_log": 0.0,
+      "rmse_log": 0.8580797399954676
+    }
+  ],
+  "tuning": [
+    {
+      "model": "Polynomial on logs + Ridge",
+      "tuned_cv_r2_log": 0.9994032406611764,
+      "n_iter": 25,
+      "best_params": {
+        "model__alpha": 0.0019,
+        "prep__config": "poly_degree=3, log_transform=True"
+      },
+      "default_cv_r2_log": 0.9939961108259134
+    },
+    {
+      "model": "XGBoost",
+      "tuned_cv_r2_log": 0.9824023309877076,
+      "n_iter": 30,
+      "best_params": {
+        "model__colsample_bytree": 0.61322,
+        "model__learning_rate": 0.03234,
+        "model__max_depth": 2,
+        "model__min_child_weight": 3,
+        "model__n_estimators": 837,
+        "model__reg_lambda": 0.21548,
+        "model__subsample": 0.79578
+      },
+      "default_cv_r2_log": 0.9726750216751378
+    },
+    {
+      "model": "Random Forest",
+      "tuned_cv_r2_log": 0.9545250431552186,
+      "n_iter": 25,
+      "best_params": {
+        "model__n_estimators": 500,
+        "model__min_samples_leaf": 1,
+        "model__max_features": 1.0,
+        "model__max_depth": 10
+      },
+      "default_cv_r2_log": 0.9545651320743619
+    }
+  ],
+  "tuned_leaderboard": [
+    {
+      "model": "Polynomial on logs + Ridge (tuned)",
+      "spearman": 0.9999363553685597,
+      "norm_gini": 0.9999548872450099,
+      "top_decile_capture": 0.3707538348272729,
+      "decile_mape": 0.0012496349801914416,
+      "mae_raw": 7.93018469472976,
+      "r2_raw": 0.9987490471425792,
+      "r2_log": 0.9994226600653208,
+      "rmse_log": 0.02061785340378526
+    },
+    {
+      "model": "XGBoost (tuned)",
+      "spearman": 0.9912686151611405,
+      "norm_gini": 0.9934853584093561,
+      "top_decile_capture": 0.3688659635666936,
+      "decile_mape": 0.01872666474992224,
+      "mae_raw": 81.3129029016206,
+      "r2_raw": 0.9605789910877134,
+      "r2_log": 0.9825860025867398,
+      "rmse_log": 0.1132340095839671
+    },
+    {
+      "model": "Random Forest (tuned)",
+      "spearman": 0.9797742376914759,
+      "norm_gini": 0.9844831356781771,
+      "top_decile_capture": 0.36239630032943265,
+      "decile_mape": 0.04980158561450139,
+      "mae_raw": 134.76863753297116,
+      "r2_raw": 0.8205184555370573,
+      "r2_log": 0.9549953181067452,
+      "rmse_log": 0.18203566983016872
+    }
+  ],
+  "test_scorecard": {
+    "model": "Polynomial on logs + Ridge -- TEST",
+    "spearman": 0.9999159978999476,
+    "norm_gini": 0.9999784216851281,
+    "top_decile_capture": 0.41765766872263915,
+    "decile_mape": 0.0019262711217507937,
+    "mae_raw": 5.980006444235874,
+    "r2_raw": 0.9997942490006071,
+    "r2_log": 0.9999332215915169,
+    "rmse_log": 0.007317238252516978
+  },
+  "drop_column_importance": [
+    {
+      "feature": "average_order_value",
+      "cv_r2_without": 0.8440841488856202,
+      "loss": 0.15531909177555614
+    },
+    {
+      "feature": "days_since_last_purchase",
+      "cv_r2_without": 0.9847537783100483,
+      "loss": 0.014649462351128073
+    },
+    {
+      "feature": "days_since_first_purchase",
+      "cv_r2_without": 0.9886056364221678,
+      "loss": 0.010797604239008551
+    },
+    {
+      "feature": "total_purchase_count",
+      "cv_r2_without": 0.9919275928337242,
+      "loss": 0.0074756478274521365
+    },
+    {
+      "feature": "product_category_diversity",
+      "cv_r2_without": 0.997758014087767,
+      "loss": 0.0016452265734093752
+    },
+    {
+      "feature": "loyalty_program_membership",
+      "cv_r2_without": 0.9994186646964911,
+      "loss": -1.542403531473724e-05
+    }
+  ],
+  "permutation_importance": [
+    {
+      "feature": "days_since_last_purchase",
+      "mean_drop_in_r2": 10.313976898011532,
+      "std": 0.8357171181949525
+    },
+    {
+      "feature": "days_since_first_purchase",
+      "mean_drop_in_r2": 10.235396817595317,
+      "std": 0.9568695789171863
+    },
+    {
+      "feature": "total_purchase_count",
+      "mean_drop_in_r2": 6.079057294691993,
+      "std": 0.5173115372192988
+    },
+    {
+      "feature": "average_order_value",
+      "mean_drop_in_r2": 0.4747933847688834,
+      "std": 0.026838927954145837
+    },
+    {
+      "feature": "product_category_diversity",
+      "mean_drop_in_r2": 0.005295085341789722,
+      "std": 0.0004139082810840413
+    },
+    {
+      "feature": "loyalty_program_membership",
+      "mean_drop_in_r2": 7.888198646283466e-05,
+      "std": 1.895322541512482e-05
+    }
+  ],
+  "value_tiers": [
+    {
+      "tier": "Standard (bottom 50%)",
+      "customers": 100,
+      "mean_actual": 304.8837,
+      "mean_predicted": 305.14383774040584,
+      "total_actual": 30488.37,
+      "share_of_value": 0.17272237594397627
+    },
+    {
+      "tier": "Growth (50-80%)",
+      "customers": 60,
+      "mean_actual": 760.6751666666667,
+      "mean_predicted": 761.4103162061713,
+      "total_actual": 45640.51,
+      "share_of_value": 0.2585621116017291
+    },
+    {
+      "tier": "High value (80-95%)",
+      "customers": 30,
+      "mean_actual": 1608.3023333333333,
+      "mean_predicted": 1612.1273222925713,
+      "total_actual": 48249.07,
+      "share_of_value": 0.27334009681354654
+    },
+    {
+      "tier": "VIP (top 5%)",
+      "customers": 10,
+      "mean_actual": 5213.867,
+      "mean_predicted": 5251.032404871865,
+      "total_actual": 52138.67,
+      "share_of_value": 0.29537541564074815
+    }
+  ],
+  "caveat": "EDA 7: the target is a deterministic function of the features, so these scores measure function recovery, not forecasting skill (readme.md 9)."
+}

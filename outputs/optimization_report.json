@@ -1,0 +1,367 @@
+{
+  "task": "regression",
+  "cv": "DecileStratifiedKFold(n_splits=5, n_bins=10, random_state=42)",
+  "cv_folds": [
+    {
+      "fold": 1,
+      "train_rows": 640,
+      "val_rows": 160,
+      "median": 536.335,
+      "top_decile_share": 0.34529401015644984
+    },
+    {
+      "fold": 2,
+      "train_rows": 640,
+      "val_rows": 160,
+      "median": 536.44,
+      "top_decile_share": 0.44294789274068974
+    },
+    {
+      "fold": 3,
+      "train_rows": 640,
+      "val_rows": 160,
+      "median": 531.2049999999999,
+      "top_decile_share": 0.30322484771949487
+    },
+    {
+      "fold": 4,
+      "train_rows": 640,
+      "val_rows": 160,
+      "median": 529.71,
+      "top_decile_share": 0.37882573215676
+    },
+    {
+      "fold": 5,
+      "train_rows": 640,
+      "val_rows": 160,
+      "median": 538.755,
+      "top_decile_share": 0.3678583394227908
+    }
+  ],
+  "tuning": [
+    {
+      "model": "mean",
+      "method": "none",
+      "n_candidates": 0,
+      "cv_score": NaN,
+      "best_params": {},
+      "note": "nothing to tune",
+      "cv_score_sd": NaN
+    },
+    {
+      "model": "median",
+      "method": "none",
+      "n_candidates": 0,
+      "cv_score": NaN,
+      "best_params": {},
+      "note": "nothing to tune",
+      "cv_score_sd": NaN
+    },
+    {
+      "model": "heuristic (product of two columns)",
+      "method": "none",
+      "n_candidates": 0,
+      "cv_score": NaN,
+      "best_params": {},
+      "note": "nothing to tune",
+      "cv_score_sd": NaN
+    },
+    {
+      "model": "linear regression",
+      "method": "none",
+      "n_candidates": 0,
+      "cv_score": NaN,
+      "best_params": {},
+      "note": "nothing to tune",
+      "cv_score_sd": NaN
+    },
+    {
+      "model": "linear regression on log(y)",
+      "method": "none",
+      "n_candidates": 0,
+      "cv_score": NaN,
+      "best_params": {},
+      "note": "nothing to tune",
+      "cv_score_sd": NaN
+    },
+    {
+      "model": "ridge on log(y)",
+      "method": "random",
+      "n_candidates": 15,
+      "cv_score": 0.992472898081514,
+      "best_params": {
+        "alpha": 17.71885
+      },
+      "note": "",
+      "cv_score_sd": 0.0014236738939730144
+    },
+    {
+      "model": "decision tree (depth 3)",
+      "method": "random",
+      "n_candidates": 15,
+      "cv_score": 0.9388177065231803,
+      "best_params": {
+        "max_depth": 8,
+        "min_samples_leaf": 4
+      },
+      "note": "",
+      "cv_score_sd": 0.0062514509823024976
+    },
+    {
+      "model": "k-NN (k=10)",
+      "method": "random",
+      "n_candidates": 15,
+      "cv_score": 0.9714301790002488,
+      "best_params": {
+        "n_neighbors": 13,
+        "weights": "distance"
+      },
+      "note": "",
+      "cv_score_sd": 0.0071506827986160685
+    },
+    {
+      "model": "gradient boosting",
+      "method": "random",
+      "n_candidates": 15,
+      "cv_score": 0.9760604308081042,
+      "best_params": {
+        "learning_rate": 0.01218,
+        "max_depth": 6,
+        "max_iter": 299
+      },
+      "note": "renamed for this implementation: {'n_estimators': 'max_iter'}; no counterpart here, dropped: ['subsample']",
+      "cv_score_sd": 0.0036236328250738403
+    },
+    {
+      "model": "neural network (MLP)",
+      "method": "random",
+      "n_candidates": 15,
+      "cv_score": 0.9675771906607562,
+      "best_params": {
+        "alpha": 0.07579,
+        "hidden_layer_sizes": "(128, 64)",
+        "learning_rate_init": 0.00754
+      },
+      "note": "",
+      "cv_score_sd": 0.024479874315976986
+    }
+  ],
+  "diagnosis": [
+    {
+      "model": "mean",
+      "train_score": NaN,
+      "cv_score": -0.04113997831831821,
+      "gap": NaN,
+      "relative_gap": NaN,
+      "verdict": "underfitting",
+      "action": "add capacity -- on this project a better representation (log, expansion) beats a bigger estimator"
+    },
+    {
+      "model": "median",
+      "train_score": NaN,
+      "cv_score": -0.07578497634021947,
+      "gap": NaN,
+      "relative_gap": NaN,
+      "verdict": "underfitting",
+      "action": "add capacity -- on this project a better representation (log, expansion) beats a bigger estimator"
+    },
+    {
+      "model": "heuristic (product of two columns)",
+      "train_score": 0.8781259800186327,
+      "cv_score": 0.8771377948692631,
+      "gap": 0.0009881851493696026,
+      "relative_gap": 0.0011253341455045374,
+      "verdict": "balanced",
+      "action": "nothing to fix; the gap is small and the score is high"
+    },
+    {
+      "model": "linear regression",
+      "train_score": 0.970613793583433,
+      "cv_score": 0.9675324723265094,
+      "gap": 0.0030813212569236192,
+      "relative_gap": 0.003174611032002351,
+      "verdict": "balanced",
+      "action": "nothing to fix; the gap is small and the score is high"
+    },
+    {
+      "model": "linear regression on log(y)",
+      "train_score": 0.9930599109497819,
+      "cv_score": 0.9929104732145343,
+      "gap": 0.00014943773524755954,
+      "relative_gap": 0.0001504820943830412,
+      "verdict": "balanced",
+      "action": "nothing to fix; the gap is small and the score is high"
+    },
+    {
+      "model": "ridge on log(y)",
+      "train_score": 0.9932263057429738,
+      "cv_score": 0.9930368952885502,
+      "gap": 0.0001894104544235553,
+      "relative_gap": 0.00019070221290793196,
+      "verdict": "balanced",
+      "action": "nothing to fix; the gap is small and the score is high"
+    },
+    {
+      "model": "decision tree (depth 3)",
+      "train_score": 0.9769641797258979,
+      "cv_score": 0.9402848504627717,
+      "gap": 0.036679329263126226,
+      "relative_gap": 0.037544190487533706,
+      "verdict": "balanced",
+      "action": "nothing to fix; the gap is small and the score is high"
+    },
+    {
+      "model": "k-NN (k=10)",
+      "train_score": 1.0,
+      "cv_score": 0.9722270226855085,
+      "gap": 0.027772977314491465,
+      "relative_gap": 0.027772977314491465,
+      "verdict": "balanced",
+      "action": "nothing to fix; the gap is small and the score is high"
+    },
+    {
+      "model": "gradient boosting",
+      "train_score": 0.987950521411689,
+      "cv_score": 0.9739109147383976,
+      "gap": 0.014039606673291405,
+      "relative_gap": 0.014210839884197964,
+      "verdict": "balanced",
+      "action": "nothing to fix; the gap is small and the score is high"
+    },
+    {
+      "model": "neural network (MLP)",
+      "train_score": 0.9964173615476436,
+      "cv_score": 0.9351181947368459,
+      "gap": 0.06129916681079772,
+      "relative_gap": 0.06151956918493206,
+      "verdict": "overfitting",
+      "action": "reduce effective capacity: stronger regularisation, fewer features, or take the simplest model within one standard error"
+    }
+  ],
+  "learning_curve": [
+    {
+      "train_rows": 128,
+      "train_score": 0.9913443050723311,
+      "cv_score": 0.9922751365208015,
+      "cv_score_sd": 0.0008171342143591156,
+      "gap": -0.0009308314484703928
+    },
+    {
+      "train_rows": 256,
+      "train_score": 0.992708141541842,
+      "cv_score": 0.992494871699753,
+      "cv_score_sd": 0.0008220262881536178,
+      "gap": 0.00021326984208891453
+    },
+    {
+      "train_rows": 384,
+      "train_score": 0.9924103324891558,
+      "cv_score": 0.9925464361766526,
+      "cv_score_sd": 0.001132575505003885,
+      "gap": -0.00013610368749683577
+    },
+    {
+      "train_rows": 512,
+      "train_score": 0.9932275214521677,
+      "cv_score": 0.9924538543759504,
+      "cv_score_sd": 0.001310724966426283,
+      "gap": 0.0007736670762173992
+    },
+    {
+      "train_rows": 640,
+      "train_score": 0.993045062712187,
+      "cv_score": 0.9923015046116997,
+      "cv_score_sd": 0.0013413382744565407,
+      "gap": 0.0007435581004872072
+    }
+  ],
+  "selection": {
+    "best_by_score": "ridge on log(y)",
+    "best_score": 0.992472898081514,
+    "chosen_score": 0.9923015046116997,
+    "standard_error": 0.0006366863209430976,
+    "threshold": 0.9918362117605709,
+    "within_one_se": [
+      "linear regression on log(y)",
+      "ridge on log(y)"
+    ],
+    "chosen": "linear regression on log(y)",
+    "traded_accuracy": 0.00017139346981420722
+  },
+  "final_model": "linear regression on log(y)",
+  "validation": {
+    "model": "linear regression on log(y)",
+    "metric": "spearman",
+    "cv_score": 0.9923015046116997,
+    "test_score": 0.9916837920948025,
+    "optimism": 0.0006177125168972397,
+    "scorecard": {
+      "model": "linear regression on log(y)",
+      "spearman": 0.9916837920948025,
+      "norm_gini": 0.9953761525050849,
+      "top_decile_capture": 0.41682369626157567,
+      "decile_mape": 0.016432529048030657,
+      "mae_raw": 85.79628665201523,
+      "r2_raw": 0.9521905509863031,
+      "r2_log": 0.9879341465997129,
+      "rmse_log": 0.09835765955993515
+    },
+    "verdict": "linear regression on log(y): cross-validated 0.9923, held-out 0.9917 (optimism +0.0006). The selection did not overfit the folds."
+  },
+  "checks": [
+    {
+      "group": "model optimization",
+      "name": "a cross-validation scheme was chosen",
+      "status": "PASS",
+      "detail": "DecileStratifiedKFold(n_splits=5, n_bins=10, random_state=42)"
+    },
+    {
+      "group": "model optimization",
+      "name": "folds are the same size to within one row",
+      "status": "PASS",
+      "detail": "5 folds of 160-160 rows"
+    },
+    {
+      "group": "model optimization",
+      "name": "stratification balanced the tail across folds",
+      "status": "PASS",
+      "detail": "top-decile share varies by 0.140 between folds"
+    },
+    {
+      "group": "model optimization",
+      "name": "every tunable model was searched",
+      "status": "PASS",
+      "detail": "5 of 10 models had a space"
+    },
+    {
+      "group": "model optimization",
+      "name": "search scores are finite where a search ran",
+      "status": "PASS",
+      "detail": "5 searches"
+    },
+    {
+      "group": "model optimization",
+      "name": "the final model is not diagnosed as overfitting",
+      "status": "PASS",
+      "detail": "1 of 10 models overfit; chosen model is balanced"
+    },
+    {
+      "group": "model optimization",
+      "name": "selection used the one-standard-error rule",
+      "status": "PASS",
+      "detail": "2 model(s) within 1 SE; chose linear regression on log(y)"
+    },
+    {
+      "group": "model optimization",
+      "name": "the simpler choice cost little accuracy",
+      "status": "PASS",
+      "detail": "traded +0.0002 for a simpler model"
+    },
+    {
+      "group": "model optimization",
+      "name": "the held-out score is close to the cross-validated one",
+      "status": "PASS",
+      "detail": "optimism +0.0006 (spearman), tolerance 0.0500"
+    }
+  ]
+}

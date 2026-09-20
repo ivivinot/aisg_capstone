@@ -1,0 +1,137 @@
+{
+  "config": {
+    "target": "estimated_lifetime_value",
+    "numeric_features": [
+      "total_purchase_count",
+      "average_order_value",
+      "days_since_first_purchase",
+      "days_since_last_purchase",
+      "product_category_diversity"
+    ],
+    "categorical_map": {
+      "loyalty_program_membership": {
+        "Enrolled": 1,
+        "Not Enrolled": 0
+      }
+    },
+    "numeric_impute": "median",
+    "binary_impute": "most_frequent",
+    "binary_fill_value": 0,
+    "knn_neighbors": 5,
+    "add_missing_indicators": true,
+    "recency_policy": "flag",
+    "add_quality_flags": false,
+    "positivity_floor": 0.001,
+    "outlier_strategy": "clip",
+    "outlier_quantiles": [
+      0.0,
+      1.0
+    ],
+    "outlier_margin": 0.5,
+    "log_transform": true,
+    "poly_degree": 3,
+    "scale": true,
+    "drop_constant_features": true,
+    "add_derived_features": false,
+    "derived_features": "none",
+    "feature_selection": "variance",
+    "select_k": null,
+    "correlation_threshold": 0.999,
+    "vif_threshold": 6.0,
+    "test_size": 0.2,
+    "n_strata": 10,
+    "random_state": 42
+  },
+  "rows_removed": {},
+  "fitted_pipeline": {
+    "n_input_features": 6,
+    "n_output_features": 119,
+    "poly_degree": 3,
+    "domain_rules": {
+      "invalid_recency": 45,
+      "non_positive": {}
+    },
+    "imputation_fills": {
+      "total_purchase_count": 5.1,
+      "average_order_value": 72.73,
+      "days_since_first_purchase": 304.815,
+      "days_since_last_purchase": 76.99000000000001,
+      "product_category_diversity": 0.2615,
+      "loyalty": 0.0
+    },
+    "missing_indicators": [],
+    "outlier_bounds": {
+      "total_purchase_count": [
+        0.02033333333333333,
+        1266.33
+      ],
+      "average_order_value": [
+        11.913333333333334,
+        1272.2549999999999
+      ],
+      "days_since_first_purchase": [
+        5.026666666666666,
+        2164.14
+      ],
+      "days_since_last_purchase": [
+        1.08,
+        675.0600000000001
+      ],
+      "product_category_diversity": [
+        0.00348,
+        1.1745
+      ]
+    },
+    "outlier_raw_bounds": {
+      "total_purchase_count": [
+        0.0305,
+        844.22
+      ],
+      "average_order_value": [
+        17.87,
+        848.17
+      ],
+      "days_since_first_purchase": [
+        7.54,
+        1442.76
+      ],
+      "days_since_last_purchase": [
+        1.62,
+        450.04
+      ],
+      "product_category_diversity": [
+        0.00522,
+        0.783
+      ]
+    },
+    "outlier_margin": 0.5,
+    "outlier_values_out_of_range_at_fit": {
+      "total_purchase_count": 0,
+      "average_order_value": 0,
+      "days_since_first_purchase": 0,
+      "days_since_last_purchase": 0,
+      "product_category_diversity": 0
+    },
+    "unseen_categories": {
+      "loyalty_program_membership": [
+        "Platinum"
+      ]
+    },
+    "feature_selection": {
+      "strategy": "variance",
+      "requested_strategy": "variance",
+      "n_in": 119,
+      "n_out": 119,
+      "n_dropped": 0,
+      "dropped": []
+    },
+    "dropped_constant_features": []
+  },
+  "validation": {
+    "total": 55,
+    "passed": 52,
+    "failed": 0,
+    "skipped": 3,
+    "failures": []
+  }
+}

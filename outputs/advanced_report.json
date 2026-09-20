@@ -1,0 +1,274 @@
+{
+  "task": "regression",
+  "headline_metric": "spearman",
+  "best_advanced": "gradient boosting",
+  "advanced_leaderboard": [
+    {
+      "model": "gradient boosting",
+      "spearman": 0.9653663396044293,
+      "norm_gini": 0.971209414003255,
+      "top_decile_capture": 0.3631824795571979,
+      "decile_mape": 0.04204102118934471,
+      "mae_raw": 166.1510025732576,
+      "r2_raw": 0.7801610004083939,
+      "r2_log": NaN,
+      "rmse_log": NaN
+    },
+    {
+      "model": "neural network (MLP)",
+      "spearman": 0.9306915588621028,
+      "norm_gini": 0.9574069589950016,
+      "top_decile_capture": 0.35687687622207087,
+      "decile_mape": 0.16905284340790144,
+      "mae_raw": 198.7816634342037,
+      "r2_raw": 0.745517770349259,
+      "r2_log": 0.6763920066256204,
+      "rmse_log": 0.48813198769797767
+    }
+  ],
+  "combined_leaderboard": [
+    {
+      "model": "ridge on log(y)",
+      "kind": "model",
+      "spearman": 0.9929443287365801,
+      "norm_gini": 0.9949146539144903,
+      "top_decile_capture": 0.36940847913599206,
+      "decile_mape": 0.019552335526399435,
+      "mae_raw": 75.03028964967532,
+      "r2_raw": 0.9650154310578758,
+      "r2_log": 0.9865718289355612,
+      "rmse_log": 0.09943426792092654
+    },
+    {
+      "model": "linear regression on log(y)",
+      "kind": "model",
+      "spearman": 0.9929104732145343,
+      "norm_gini": 0.99489400103649,
+      "top_decile_capture": 0.36940847913599206,
+      "decile_mape": 0.019066812003937374,
+      "mae_raw": 75.12936656819666,
+      "r2_raw": 0.9649510156285686,
+      "r2_log": 0.9865791338393477,
+      "rmse_log": 0.09940721819956076
+    },
+    {
+      "model": "k-NN (k=10)",
+      "kind": "model",
+      "spearman": 0.9693238089510966,
+      "norm_gini": 0.9793446937427175,
+      "top_decile_capture": 0.36427429789878485,
+      "decile_mape": 0.08825707608413695,
+      "mae_raw": 165.69899249999997,
+      "r2_raw": 0.7234789517814846,
+      "r2_log": 0.9206411184876236,
+      "rmse_log": 0.2417271419062329
+    },
+    {
+      "model": "linear regression",
+      "kind": "model",
+      "spearman": 0.9675324723265094,
+      "norm_gini": 0.9804804293418206,
+      "top_decile_capture": 0.3661157182791738,
+      "decile_mape": 0.7844822930474032,
+      "mae_raw": 356.2615809461538,
+      "r2_raw": 0.5620068384338885,
+      "r2_log": NaN,
+      "rmse_log": NaN
+    },
+    {
+      "model": "gradient boosting",
+      "kind": "advanced",
+      "spearman": 0.9653663396044293,
+      "norm_gini": 0.971209414003255,
+      "top_decile_capture": 0.3631824795571979,
+      "decile_mape": 0.04204102118934471,
+      "mae_raw": 166.1510025732576,
+      "r2_raw": 0.7801610004083939,
+      "r2_log": NaN,
+      "rmse_log": NaN
+    },
+    {
+      "model": "neural network (MLP)",
+      "kind": "advanced",
+      "spearman": 0.9306915588621028,
+      "norm_gini": 0.9574069589950016,
+      "top_decile_capture": 0.35687687622207087,
+      "decile_mape": 0.16905284340790144,
+      "mae_raw": 198.7816634342037,
+      "r2_raw": 0.745517770349259,
+      "r2_log": 0.6763920066256204,
+      "rmse_log": 0.48813198769797767
+    },
+    {
+      "model": "heuristic (product of two columns)",
+      "kind": "naive",
+      "spearman": 0.8771377948692631,
+      "norm_gini": 0.9116310471113929,
+      "top_decile_capture": 0.3400942115984239,
+      "decile_mape": 0.8099783139000929,
+      "mae_raw": 800.2402766055959,
+      "r2_raw": -29.25744188285969,
+      "r2_log": -3.022923911045641,
+      "rmse_log": 1.7210700903002525
+    },
+    {
+      "model": "decision tree (depth 3)",
+      "kind": "model",
+      "spearman": 0.6984430360145939,
+      "norm_gini": 0.8012454870794121,
+      "top_decile_capture": 0.3123211765877429,
+      "decile_mape": 0.055070276885953354,
+      "mae_raw": 355.798659280627,
+      "r2_raw": 0.5355117843514194,
+      "r2_log": 0.559232745735553,
+      "rmse_log": 0.5696817529493597
+    },
+    {
+      "model": "mean",
+      "kind": "naive",
+      "spearman": -0.04113997831831821,
+      "norm_gini": -0.10293367015456503,
+      "top_decile_capture": 0.10604353591470729,
+      "decile_mape": 0.14297245857856183,
+      "mae_raw": 570.7909546875001,
+      "r2_raw": -0.002555052772652111,
+      "r2_log": -0.22994446612594222,
+      "rmse_log": 0.9516349845378846
+    },
+    {
+      "model": "median",
+      "kind": "naive",
+      "spearman": -0.07578497634021947,
+      "norm_gini": -0.09291670600018725,
+      "top_decile_capture": 0.10134410420475669,
+      "decile_mape": 0.3264969551496481,
+      "mae_raw": 510.5303625,
+      "r2_raw": -0.06351977441521539,
+      "r2_log": -0.003851746616217566,
+      "rmse_log": 0.8597307046165165
+    }
+  ],
+  "paired_comparison": [
+    {
+      "model": "gradient boosting",
+      "score": 0.9653663396044293,
+      "reference": "ridge on log(y)",
+      "reference_score": 0.9929443287365801,
+      "fold_mean": 0.9616277896982485,
+      "reference_fold_mean": 0.9912885268955819,
+      "delta": -0.029660737197333354,
+      "delta_sd": 0.013307042464843797,
+      "folds_won": 0,
+      "folds": 5,
+      "reliable": true,
+      "p_value": 0.04106552654151509,
+      "significant": true,
+      "fit_time_ratio": 7.270660185518543
+    },
+    {
+      "model": "neural network (MLP)",
+      "score": 0.9306915588621028,
+      "reference": "ridge on log(y)",
+      "reference_score": 0.9929443287365801,
+      "fold_mean": 0.9424985350990273,
+      "reference_fold_mean": 0.9912885268955819,
+      "delta": -0.0487899917965545,
+      "delta_sd": 0.041634156195481636,
+      "folds_won": 0,
+      "folds": 5,
+      "reliable": true,
+      "p_value": 0.1932041519015136,
+      "significant": false,
+      "fit_time_ratio": 5.605059338524889
+    }
+  ],
+  "benchmark": [
+    {
+      "model": "neural network (MLP)",
+      "fit_ms": 138.66019999841228,
+      "predict_us_per_row": 10.222374985460192,
+      "model_kb": 78.6982421875
+    },
+    {
+      "model": "gradient boosting",
+      "fit_ms": 179.86450000898913,
+      "predict_us_per_row": 17.1071250224486,
+      "model_kb": 310.98046875
+    }
+  ],
+  "tuned": false,
+  "tuning": [],
+  "analysis": {
+    "task": "regression",
+    "headline_metric": "spearman",
+    "overall_best": "ridge on log(y)",
+    "overall_best_is_advanced": false,
+    "reference": "ridge on log(y)",
+    "best_advanced": "gradient boosting",
+    "delta": -0.029660737197333354,
+    "delta_sd": 0.013307042464843797,
+    "reliable": true,
+    "folds_won": "0 of 5",
+    "fit_time_ratio": 7.270660185518543,
+    "p_value": 0.04106552654151509,
+    "significant": true,
+    "pooled_gap": -0.027577989132150815,
+    "pooled_and_paired_agree": true,
+    "tuned": false,
+    "verdict": "No advanced architecture beat ridge on log(y) at their default settings: the best of them (gradient boosting) is 0.0297 behind, and the gap is significant (corrected paired t-test p = 0.0411), at 7.3x the fit time. Keep the baseline.",
+    "architectures": {
+      "gradient boosting": "additive ensemble: shallow trees fitted in sequence on the residual",
+      "neural network (MLP)": "dense feed-forward network, two hidden layers (64, 32), ReLU"
+    }
+  },
+  "checks": [
+    {
+      "group": "advanced models",
+      "name": "both advanced architectures ran",
+      "status": "PASS",
+      "detail": "['gradient boosting', 'neural network (MLP)']"
+    },
+    {
+      "group": "advanced models",
+      "name": "predictions are finite",
+      "status": "PASS",
+      "detail": "2 prediction sets checked"
+    },
+    {
+      "group": "advanced models",
+      "name": "every model has a score for each fold",
+      "status": "PASS",
+      "detail": "{'gradient boosting': 5, 'neural network (MLP)': 5}"
+    },
+    {
+      "group": "advanced models",
+      "name": "the reference is a model baseline, not a naive one",
+      "status": "PASS",
+      "detail": "compared against ridge on log(y)"
+    },
+    {
+      "group": "advanced models",
+      "name": "the paired difference is consistent with the leaderboard",
+      "status": "PASS",
+      "detail": "delta -0.0297 = fold mean - reference fold mean"
+    },
+    {
+      "group": "advanced models",
+      "name": "every advanced model beats the naive floor",
+      "status": "PASS",
+      "detail": "floor 0.8771, worst advanced 0.9307"
+    },
+    {
+      "group": "advanced models",
+      "name": "the comparison carries a significance test",
+      "status": "PASS",
+      "detail": "corrected paired t-test p = 0.0411 (significant)"
+    },
+    {
+      "group": "advanced models",
+      "name": "the verdict states the cost as well as the gain",
+      "status": "PASS",
+      "detail": "No advanced architecture beat ridge on log(y) at their default setting..."
+    }
+  ]
+}

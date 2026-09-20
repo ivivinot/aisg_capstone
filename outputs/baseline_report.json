@@ -1,0 +1,221 @@
+{
+  "task": "regression",
+  "headline_metric": "spearman",
+  "best": "ridge on log(y)",
+  "leaderboard": [
+    {
+      "model": "ridge on log(y)",
+      "spearman": 0.9929443287365801,
+      "norm_gini": 0.9949146539144903,
+      "top_decile_capture": 0.36940847913599206,
+      "decile_mape": 0.019552335526399435,
+      "mae_raw": 75.03028964967532,
+      "r2_raw": 0.9650154310578758,
+      "r2_log": 0.9865718289355612,
+      "rmse_log": 0.09943426792092654
+    },
+    {
+      "model": "linear regression on log(y)",
+      "spearman": 0.9929104732145343,
+      "norm_gini": 0.99489400103649,
+      "top_decile_capture": 0.36940847913599206,
+      "decile_mape": 0.019066812003937374,
+      "mae_raw": 75.12936656819666,
+      "r2_raw": 0.9649510156285686,
+      "r2_log": 0.9865791338393477,
+      "rmse_log": 0.09940721819956076
+    },
+    {
+      "model": "k-NN (k=10)",
+      "spearman": 0.9693238089510966,
+      "norm_gini": 0.9793446937427175,
+      "top_decile_capture": 0.36427429789878485,
+      "decile_mape": 0.08825707608413695,
+      "mae_raw": 165.69899249999997,
+      "r2_raw": 0.7234789517814846,
+      "r2_log": 0.9206411184876236,
+      "rmse_log": 0.2417271419062329
+    },
+    {
+      "model": "linear regression",
+      "spearman": 0.9675324723265094,
+      "norm_gini": 0.9804804293418206,
+      "top_decile_capture": 0.3661157182791738,
+      "decile_mape": 0.7844822930474032,
+      "mae_raw": 356.2615809461538,
+      "r2_raw": 0.5620068384338885,
+      "r2_log": NaN,
+      "rmse_log": NaN
+    },
+    {
+      "model": "heuristic (product of two columns)",
+      "spearman": 0.8771377948692631,
+      "norm_gini": 0.9116310471113929,
+      "top_decile_capture": 0.3400942115984239,
+      "decile_mape": 0.8099783139000929,
+      "mae_raw": 800.2402766055959,
+      "r2_raw": -29.25744188285969,
+      "r2_log": -3.022923911045641,
+      "rmse_log": 1.7210700903002525
+    },
+    {
+      "model": "decision tree (depth 3)",
+      "spearman": 0.6984430360145939,
+      "norm_gini": 0.8012454870794121,
+      "top_decile_capture": 0.3123211765877429,
+      "decile_mape": 0.055070276885953354,
+      "mae_raw": 355.798659280627,
+      "r2_raw": 0.5355117843514194,
+      "r2_log": 0.559232745735553,
+      "rmse_log": 0.5696817529493597
+    },
+    {
+      "model": "mean",
+      "spearman": -0.04113997831831821,
+      "norm_gini": -0.10293367015456503,
+      "top_decile_capture": 0.10604353591470729,
+      "decile_mape": 0.14297245857856183,
+      "mae_raw": 570.7909546875001,
+      "r2_raw": -0.002555052772652111,
+      "r2_log": -0.22994446612594222,
+      "rmse_log": 0.9516349845378846
+    },
+    {
+      "model": "median",
+      "spearman": -0.07578497634021947,
+      "norm_gini": -0.09291670600018725,
+      "top_decile_capture": 0.10134410420475669,
+      "decile_mape": 0.3264969551496481,
+      "mae_raw": 510.5303625,
+      "r2_raw": -0.06351977441521539,
+      "r2_log": -0.003851746616217566,
+      "rmse_log": 0.8597307046165165
+    }
+  ],
+  "benchmark": [
+    {
+      "model": "heuristic (product of two columns)",
+      "fit_ms": 0.08559995330870152,
+      "predict_us_per_row": 0.0696250208420679,
+      "model_kb": 0.166015625
+    },
+    {
+      "model": "mean",
+      "fit_ms": 0.14020001981407404,
+      "predict_us_per_row": 0.023749962565489113,
+      "model_kb": 0.5478515625
+    },
+    {
+      "model": "median",
+      "fit_ms": 0.14519999967887998,
+      "predict_us_per_row": 0.02237502485513687,
+      "model_kb": 0.5498046875
+    },
+    {
+      "model": "decision tree (depth 3)",
+      "fit_ms": 18.177000049035996,
+      "predict_us_per_row": 9.109249949688092,
+      "model_kb": 7.9599609375
+    },
+    {
+      "model": "linear regression",
+      "fit_ms": 18.380200024694204,
+      "predict_us_per_row": 8.999374986160547,
+      "model_kb": 6.44921875
+    },
+    {
+      "model": "k-NN (k=10)",
+      "fit_ms": 19.811500038485974,
+      "predict_us_per_row": 12.890875004814006,
+      "model_kb": 67.564453125
+    },
+    {
+      "model": "linear regression on log(y)",
+      "fit_ms": 24.566799984313548,
+      "predict_us_per_row": 8.643499968457036,
+      "model_kb": 6.81640625
+    },
+    {
+      "model": "ridge on log(y)",
+      "fit_ms": 24.73840001039207,
+      "predict_us_per_row": 8.781625001574866,
+      "model_kb": 6.728515625
+    }
+  ],
+  "analysis": {
+    "headline_metric": "spearman",
+    "task": "regression",
+    "best": "ridge on log(y)",
+    "best_score": 0.9929443287365801,
+    "winner_by_metric": {
+      "spearman": "ridge on log(y)",
+      "norm_gini": "ridge on log(y)",
+      "top_decile_capture": "ridge on log(y)",
+      "decile_mape": "linear regression on log(y)",
+      "mae_raw": "ridge on log(y)",
+      "r2_raw": "ridge on log(y)",
+      "r2_log": "linear regression on log(y)",
+      "rmse_log": "linear regression on log(y)"
+    },
+    "metrics_agree": false,
+    "disagreement": "2 different winners across 8 metrics: ['linear regression on log(y)', 'ridge on log(y)']",
+    "naive_floor": {
+      "baseline": "mean",
+      "score": -0.04113997831831821
+    },
+    "lift_over_floor": {
+      "ridge on log(y)": 1.0,
+      "linear regression on log(y)": 0.9999672603850432,
+      "k-NN (k=10)": 0.9771580328370368,
+      "linear regression": 0.9754257402063818,
+      "heuristic (product of two columns)": 0.8880105489685484,
+      "decision tree (depth 3)": 0.715205722867283,
+      "mean": 0.0,
+      "median": -0.03350306912651174
+    },
+    "bar_for_a_real_model": {
+      "baseline": "heuristic (product of two columns)",
+      "score": 0.8771377948692631,
+      "model_baselines_beating_it": 4,
+      "of": 5
+    }
+  },
+  "checks": [
+    {
+      "group": "baseline models",
+      "name": "every baseline produced a score",
+      "status": "PASS",
+      "detail": "8 baselines, headline metric spearman"
+    },
+    {
+      "group": "baseline models",
+      "name": "predictions are finite",
+      "status": "PASS",
+      "detail": "8 prediction sets checked"
+    },
+    {
+      "group": "baseline models",
+      "name": "one prediction per row",
+      "status": "PASS",
+      "detail": "all 800 rows predicted"
+    },
+    {
+      "group": "baseline models",
+      "name": "the mean baseline scores R2 ~ 0",
+      "status": "PASS",
+      "detail": "got -0.0026 out-of-fold"
+    },
+    {
+      "group": "baseline models",
+      "name": "at least one model baseline beats the strongest naive one",
+      "status": "PASS",
+      "detail": "4 of 5 beat heuristic (product of two columns) (spearman 0.8771)"
+    },
+    {
+      "group": "baseline models",
+      "name": "benchmark covers every baseline",
+      "status": "PASS",
+      "detail": "8 timed"
+    }
+  ]
+}

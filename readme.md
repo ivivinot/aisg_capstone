@@ -3,6 +3,10 @@
 **Objective.** Predict the value a customer will generate over the **next 12 months** in a
 non-contractual e-commerce setting, and use that prediction to target marketing spend.
 
+Customer lifetime value on a cross-sectional RFM summary — and, underneath it, a **task-agnostic
+machine-learning pipeline**: the same protocol (baselines → architectures → tuning → fit
+diagnosis → checks) runs **regression, classification and clustering**, selected with `--task`.
+
 This document has two parts. **§1–§12 are the literature review and research synthesis**: what
 the field has established, which methods win in which data regime, how such models are
 evaluated, where they usually go wrong, and how all of that maps onto the dataset in `data/`.
@@ -10,23 +14,36 @@ evaluated, where they usually go wrong, and how all of that maps onto the datase
 it produced, and what may honestly be claimed from the result.
 
 > **Status.** Complete. `eda.ipynb` holds the analysis; `main.py` processes the data and runs
-> the 25 checks that validate it; `train.py` models it; `outputs/` holds what the last run
-> produced.
+> the 55 checks that validate it, the baseline ladder, the architecture comparison and the
+> optimization stage; `train.py` models it; `predict.py` scores new customers; `src/` is the
+> seven-module library behind all three; `documentation/` is the manual; `outputs/` holds what
+> the last run produced.
 >
-> **Read §9 and §17 before quoting any score.** The supplied target is an *already estimated*
-> lifetime value and is a near-deterministic function of the feature columns, so the pipeline's
-> near-perfect metrics measure **recovery of a generating formula**, not forecasting skill. A
-> deployed 12-month CLV system reports Spearman ≈ 0.56 (§4.2).
+> **Read §9 and §17 before quoting any score.** The supplied target,
+> `estimated_lifetime_value`, is *already an estimate*, and §7 of `eda.ipynb` shows it to be a
+> near-deterministic function of the six feature columns. Every score this project produces —
+> Spearman ≈ 0.9999, R² ≈ 0.9998 — therefore measures **recovery of a generating formula**, not
+> forecasting skill. A deployed 12-month CLV system reports Spearman ≈ 0.56 (§4.2). That is not a
+> disclaimer bolted on at the end; it is why the pipeline is built the way it is, and the code
+> restates it wherever it prints a score — see §15.7 and §17.2, and the last lines of any
+> `train.py` run.
+
+**Documentation.** This file is the *report* — the literature review, the findings and the
+numbers. [`documentation/`](documentation/) is the *manual*: six pages, indexed at the end of
+[Contents](#contents).
 
 **Quick start**
 
 ```bash
 pip install -r requirements.txt
-python main.py        # process the data, then test and validate it   (~2 s)
-python train.py       # the same, then select, tune and score a model (~22 s)
-pytest tests/ -q      # the same checks as a suite, on dirty fixtures
+python main.py        # data → 55 checks → baselines → architectures → optimization  (~30 s)
+python train.py       # the above, then the candidate zoo and one test evaluation    (~50 s)
+pytest tests/ -q      # the same checks as a suite, on dirty fixtures — 139 tests    (~65 s)
 python predict.py --input new_customers.csv --output scored.csv
 ```
+
+Timings are from a run on Python 3.12 with the versions pinned in `requirements.txt`; they scale
+with the machine, not with the data.
 
 ---
 
@@ -55,6 +72,20 @@ python predict.py --input new_customers.csv --output scored.csv
 16. [Design decisions, and what they cost](#16-design-decisions-and-what-they-cost)  
     · [16.3 Engineered features](#163-engineered-features-the-strategy-and-what-it-was-worth) · [16.4 Feature selection](#164-feature-selection-and-what-each-strategy-costs)
 17. [Deployment considerations and limits](#17-deployment-considerations-and-limits)
+
+**The manual — [`documentation/`](documentation/)**
+
+These pages are reference material rather than report: how the code is organised, what each
+public function does, what each model assumes, and how to run the thing in production.
+
+| Page | Read it when |
+|---|---|
+| [01-architecture.md](documentation/01-architecture.md) | You want the module map, the data flow, and why the code is split the way it is. |
+| [02-api-reference.md](documentation/02-api-reference.md) | You are calling the package from your own code. All 104 public symbols, by module. |
+| [03-models.md](documentation/03-models.md) | You want to know what each model is, what it assumes, and when it wins. |
+| [04-deployment.md](documentation/04-deployment.md) | You are putting this behind an API, a batch job, or a scheduler. |
+| [05-operations.md](documentation/05-operations.md) | It is running and something needs monitoring, retraining or debugging. |
+| [06-review.md](documentation/06-review.md) | You are assessing the project, or checking what is verified versus claimed. |
 
 ---
 
@@ -507,7 +538,7 @@ report. Numbers attributed to the supplied dataset in §9 were computed directly
 ## 13. The pipeline
 
 `eda.ipynb` is the analysis; this is the same analysis as code that runs unattended, end to end,
-in about 20 seconds.
+in about half a minute.
 
 Two entry points. `main.py` owns the data and refuses to hand it on quietly if a
 check fails; `train.py` runs `main.py`'s stages first, stops on a failed check, and
@@ -543,7 +574,15 @@ data/synthetic_data_126.csv
         │   select → train → evaluate → analyse → benchmark         │
         │   6 more checks        ─► baseline_leaderboard.csv         │
         ▼                                                          │
- 11  artifacts ──────────────────────────────────────────────────────┘
+ 11  ADVANCED MODELS (src/advanced_models.py)                       │
+        │   2 distinct architectures, same folds, paired comparison │
+        │   8 more checks        ─► model_comparison.csv,            │
+        ▼                          advanced_models_report.md        │
+ 12  MODEL OPTIMIZATION (src/model_optimization.py)                 │
+        │   folds → search → fit diagnosis → 1-SE selection →       │
+        │   one held-out score; 9 more checks                       │
+        ▼                       ─► hyperparameter_search.csv         │
+ 13  artifacts ──────────────────────────────────────────────────────┘
         │
         ▼                                                  ┌──────────────────────
   9  model selection: 8 candidates + 2 baselines, 5-fold CV ─► model_leaderboard.csv
@@ -559,6 +598,21 @@ data/synthetic_data_126.csv
 
 ### 13.1 File structure
 
+```
+capstone/
+├── main.py                 data entry point: process → validate → baselines → compare → optimise
+├── train.py                modelling entry point: the above, then the candidate zoo
+├── predict.py              batch scoring from the saved bundle
+├── src/                    the library — 7 modules, every one runnable standalone
+├── tests/                  139 tests; pytest.ini configures them
+├── data/                   synthetic_data_126.csv
+├── outputs/                everything a run produces
+├── documentation/          the manual — 6 pages, indexed under Contents
+├── eda.ipynb               the analysis the pipeline implements
+├── requirements.txt        pinned, with the entry point each line serves
+└── readme.md               this file — the report
+```
+
 | Path | What it is |
 |---|---|
 | `main.py` | **Data entry point.** Audit → filter → split → preprocess → validate → test. Writes the processed data and the reports; exits non-zero if a check fails. |
@@ -566,13 +620,37 @@ data/synthetic_data_126.csv
 | `predict.py` | Scores a CSV of new customers from `outputs/model.joblib`. |
 | `src/preprocessing.py` | The data contract, the audit, the split, the cleaning transformers, the `CLVPreprocessor` facade — **and the checks that test and validate what it produced**. |
 | `src/feature_engineering.py` | The feature half: the catalogue of engineered columns, `DerivedFeatures`, the log/expand/scale steps, `FeatureSelector`, and the measurements that say whether any of it helped. |
-| `src/metrics.py` | The scorecard of §7.2: Spearman, normalized Gini, top-decile capture, decile MAPE, MAE, R². |
+| `src/metrics.py` | The scorecard of §7.2: Spearman, normalized Gini, top-decile capture, decile MAPE, MAE, R². Every other module scores through it. |
 | `src/models.py` | **The baseline ladder, for any task.** Regression, classification and clustering baselines with their rationale, the cross-validated evaluation, the metric guide, the cost benchmark and the checks. |
-| `src/evaluation.py` | Test-set scoring, both importance measures, value tiers, figures, the model bundle. |
-| `tests/`, `pytest.ini` | The same checks as a pytest suite, plus unit tests on a 12-row fixture carrying every quality violation. |
+| `src/advanced_models.py` | **Two further architectures per task**, chosen for different inductive biases, plus the paired fold-by-fold comparison against the ladder, the verdict and the generated Markdown report. |
+| `src/model_optimization.py` | **Cross-validation, tuning and the fight against over/underfitting** for every developed model: fold strategies, one search-space registry, the fit diagnosis, learning and validation curves, the one-standard-error rule and the single held-out validation. |
+| `src/evaluation.py` | Test-set scoring, both importance measures, value tiers, figures, the model bundle — the stages `train.py` runs after the gate, and the loader `predict.py` uses. |
+| `tests/`, `pytest.ini` | The same checks as a pytest suite, plus unit tests on a 12-row fixture carrying every quality violation. `pytest.ini` fixes the test path, quiet output and the `slow` marker so `pytest` behaves the same from any directory. |
+| `documentation/` | The manual — six reference pages, listed with what each one answers under [Contents](#contents). This file stays the report. |
 | `eda.ipynb` | The analysis this is built from — 14 sections, every decision argued. |
 | `data/` | `synthetic_data_126.csv`, 1,000 customers × 7 columns. |
-| `outputs/` | Everything the last run produced (see §14.4). |
+| `outputs/` | Everything the last run produced (see §14.5). |
+
+**Which entry point pulls in what.** The three scripts do not import the same library — this is
+the answer to "is `src/evaluation.py` part of a `main.py` run?", and the answer is no:
+
+| | `preprocessing` | `feature_engineering` | `metrics` | `models` | `advanced_models` | `model_optimization` | `evaluation` |
+|---|:--:|:--:|:--:|:--:|:--:|:--:|:--:|
+| `main.py` | ● | ● | ○ | ● | ● | ● | — |
+| `train.py` | ● | ● | ● | ● | ● | ● | ● |
+| `predict.py` | ○ | — | ○ | ○ | — | — | ● |
+
+● imported directly · ○ pulled in as a dependency · — not loaded at all
+
+* **`main.py`** stops at the data and the model *comparison*. It never imports `src/evaluation.py`,
+  because opening the test split is not its job (§13.2). `src/metrics.py` still reaches it, through
+  `src/models.py`, which scores every baseline with the same scorecard.
+* **`train.py`** is the only thing that imports `src/evaluation.py`. It also imports `main.py`
+  itself, so the data stages, the flags and the validation gate cannot drift between the two.
+* **`predict.py`** imports one symbol, `load_bundle`, and gets `metrics`, `models` and
+  `preprocessing` with it — they are what `outputs/model.joblib` has to be unpickled against.
+* **`pytest.ini`** is configuration, not code: nothing in the pipeline reads it, and `main.py`
+  runs its 55 checks with or without pytest installed.
 
 ### 13.2 The three architectural decisions
 
@@ -597,8 +675,9 @@ leaves ranking untouched.
 
 ### 13.3 The fourth decision: the checks ship with the pipeline
 
-The 38 checks live beside the code they check — 25 at the bottom of `src/preprocessing.py`, 7 in
-`src/feature_engineering.py`, 6 in `src/models.py` — and `main.py` runs all of them on every run rather than leaving them in a suite someone
+The 55 checks live beside the code they check — 25 at the bottom of `src/preprocessing.py`, 7 in
+`src/feature_engineering.py`, 6 in `src/models.py`, 8 in `src/advanced_models.py`, 9 in
+`src/model_optimization.py` — and `main.py` runs all of them on every run rather than leaving them in a suite someone
 remembers to invoke. `train.py` treats them as a **gate**: a
 failed check stops the run before a model is fitted, because a score computed on data that did
 not pass its own checks is worse than no score. `tests/` is a thin pytest wrapper around the
@@ -613,14 +692,19 @@ What is actually being checked, and why each group exists, is §14.3.
 ```bash
 pip install -r requirements.txt
 
-python main.py        # process the data, then test and validate it   (~2 s)
-python train.py       # the same, then select, tune and score a model (~22 s)
+python main.py        # process the data, then test and validate it   (~30 s)
+python train.py       # the same, then select, tune and score a model (~50 s)
 ```
 
-`main.py` prints seven numbered sections — audit, row filtering, preprocessing, output
-validation, transformer tests, statistical validation, artifacts — and **exits non-zero if any
-check failed**, so it works as a CI gate. `train.py` continues into model selection, tuning,
-the single test-set evaluation, importance and tiers.
+`main.py` prints twelve numbered sections — audit, row filtering, preprocessing, feature
+engineering, output validation, transformer tests, feature-engineering tests, statistical
+validation, baseline models, advanced models, model optimization, artifacts — and **exits
+non-zero if any check failed**, so it works as a CI gate. A default run reports **52 passed,
+0 failed, 3 skipped**; the three skips are the derived-feature checks, which have nothing to
+check until `--derived-features` asks for the columns.
+
+`train.py` runs all twelve first, stops if a check failed, and continues into model selection,
+tuning, the single test-set evaluation, importance and tiers.
 
 ### 14.1 Flags
 
@@ -632,7 +716,13 @@ Both entry points share the data and validation flags:
 | `--feature-selection STRATEGY` | `none`, `variance` (default), `correlation`, `mutual_info`, `model`, `vif`. |
 | `--select-k K` | How many features the supervised strategies keep. |
 | `--feature-report` / `--compare-features` | Per-feature diagnostics / measure each feature set against Ridge and a Random Forest. |
-| `--task auto\|regression\|classification\|clustering` | Which baseline ladder to run; `auto` reads it off the target. |
+| `--task auto\|regression\|classification\|clustering` | Which ladder and comparison to run; `auto` reads it off the target. |
+| `--architectures` | Print what each advanced model assumes and costs, then exit. |
+| `--no-advanced` / `--no-report` | Skip the architecture comparison / skip its Markdown report. |
+| `--tune-advanced` / `--search-iter N` | Give each advanced architecture a bounded randomised search before comparing (default 20 draws), so a baseline win is not a win over defaults. |
+| `--cv-strategy auto\|kfold\|stratified\|repeated\|shuffle\|timeseries` | Fold scheme for the optimization stage; `auto` stratifies regression folds on value deciles. |
+| `--search-method random\|grid\|halving` / `--optimize-iter N` | How the hyperparameter space is explored, and the budget. |
+| `--no-optimize` / `--no-learning-curve` | Skip the optimization stage / skip the learning curve of the chosen model. |
 | `--baseline-catalogue` / `--metric-guide` | Print the baselines for every task / what each metric answers and how it misleads. |
 | `--no-baselines` / `--no-benchmark` | Skip the ladder / skip its timing benchmark. |
 | `--baseline-poly-degree N` | Representation for the baselines (default 1 — a baseline may not borrow the expansion). |
@@ -654,13 +744,37 @@ and `--ignore-failed-checks` for the case where a check fails and you know why.
 
 ```bash
 pip install pytest
-pytest tests/ -q                # 77 tests, about 4 s
-pytest tests/ -q -m slow        # the cross-validated checks as well
+pytest tests/ -q                # 139 tests, about 65 s
+pytest tests/ -q -m slow        # the cross-validated checks on their own
 ```
 
-The suite runs the same three groups `main.py` runs, plus unit tests on a 12-row fixture that
+`pytest.ini` supplies the configuration — `testpaths = tests`, `-q --strict-markers`, and the
+`slow` marker — so the two lines above behave identically from the project root or anywhere else.
+It is read by pytest alone: `main.py` runs the same checks whether or not pytest is installed.
+
+The suite runs the same seven groups `main.py` runs (A–G below), plus unit tests on a 12-row fixture that
 carries the pathologies the real file happens *not* to have — a missing value, an unseen
 category, a non-positive feature — so a refactor fails in CI instead of in a production run.
+
+**Every module also runs on its own**, which is what a submission smoke test usually does:
+
+```bash
+python src/models.py               # all three baseline ladders on synthetic data
+python src/advanced_models.py      # the architecture comparison, all three tasks
+python src/model_optimization.py   # folds, search, fit diagnosis and selection
+python src/preprocessing.py        # audit, split, fit, and the 25 checks
+python src/feature_engineering.py  # the catalogue, the rank test, every selection strategy
+python src/metrics.py              # each metric scored against a known target
+python src/evaluation.py           # fit, score, explain, tier, persist, plot
+```
+
+All seven run clean, in 1–16 s each. Each prints a report and exits 0, or names what failed and exits 1. They need no arguments and
+no dataset — `preprocessing.py` uses `data/synthetic_data_126.csv` when it is there and generates
+equivalent rows when it is not. `python -m src.models` and `cd src && python models.py` work too.
+
+The modules import each other relatively (`from .metrics import ...`), which only resolves when
+Python knows the parent package. Each file therefore falls back to an absolute import when
+`__package__` is empty — the case when a file is run directly rather than imported.
 
 ### 14.3 What is validated, and why
 
@@ -689,7 +803,18 @@ row, the naive floor behaving like a floor (R² ≈ 0 for the mean, accuracy = t
 the most-frequent class, undefined indices for a single cluster), at least one model baseline
 beating the strongest naive one, and a benchmark covering every row.
 
-**Group E — statistical validation (5 checks).** Feature count per polynomial degree
+**Group E — advanced models (8 checks).** Both architectures ran, predictions finite, a score for
+every fold, the reference is a *model* baseline rather than a naive one, `delta` is exactly the
+difference of the two fold means it claims to be, the comparison carries a significance test,
+every advanced model clears the naive floor, and the verdict states the cost as well as the gain.
+
+**Group F — model optimization (9 checks).** A fold scheme was chosen and its folds are even;
+stratification balanced the tail; every tunable model was searched and its score is finite; the
+chosen model is not one of the ones diagnosed as overfitting; selection used the
+one-standard-error rule and the simpler choice cost no more than that standard error; and the
+held-out score sits within tolerance of the cross-validated one.
+
+**Group G — statistical validation (5 checks).** Feature count per polynomial degree
 (7 / 35 / 119), the CV R² the representation is supposed to earn (0.99936 ± 5e-4), and the
 **label-shuffle test**: refit the whole pipeline on a permuted target, where the score must
 collapse. It lands at **−0.374** — comfortably below zero, which is what an honest preprocessor
@@ -719,9 +844,12 @@ scored — otherwise a customer's tier would depend on who else happened to be s
 | `processed_train.csv`, `processed_test.csv` | `main.py` | The 119 model features plus the target and its log. |
 | `preprocessor.joblib` | `main.py` | The fitted feature pipeline on its own. |
 | `baseline_leaderboard.csv`, `baseline_benchmark.csv`, `baseline_report.json` | `main.py` | The baseline ladder: scores, cost, the metric analysis and its checks. |
+| `advanced_leaderboard.csv`, `model_comparison.csv`, `paired_comparison.csv`, `advanced_report.json`, `advanced_models_report.md` | `main.py` | The two advanced architectures, every model in one table, the paired fold-by-fold comparison, and the written-up verdict. |
+| `hyperparameter_search.csv`, `fit_diagnosis.csv`, `learning_curve.csv`, `optimization_report.json` | `main.py` | What each search chose, the over/underfit verdict per model, the learning curve of the selected model, and the one-standard-error selection with its held-out validation. |
 | `model_leaderboard.csv`, `modelling_report.json` | `train.py` | Cross-validated scores for every candidate, the search results, the test scorecard, both importance tables, the tiers. |
 | `test_predictions.csv`, `customer_tiers.csv` | `train.py` | Per-customer predictions with tier, and the tier summary. |
 | `model.joblib` | `train.py` | The fitted model with its smearing factor, feature contract, tier thresholds and test scores — what `predict.py` loads. |
+| `feature_report.csv`, `feature_comparison.csv` | `main.py` | Opt-in (`--feature-report`, `--compare-features`): per-feature diagnostics, and each feature set measured against Ridge and a Random Forest. |
 | `figures/*.png` | `train.py` | Model selection, test diagnostics, drop-column importance, value tiers. |
 
 ---
@@ -796,7 +924,159 @@ bought 0.5% the table would say to ship the heuristic.
 `python main.py --metric-guide` prints what each metric answers and how it misleads;
 `--baseline-catalogue` prints the ladder for all three task types.
 
-### 15.3 Model selection — 5-fold CV on the training split
+### 15.3 Two more architectures — and whether they earn their keep
+
+`src/advanced_models.py` develops a second and third model for the task, chosen so that their
+**inductive biases differ from each other and from the baselines**. Adding a second gradient
+booster to a ladder that already has one measures hyperparameters; these measure architecture:
+
+| Model | Architecture | What it assumes |
+|---|---|---|
+| **Gradient boosting** | additive ensemble of shallow trees, fitted in sequence on the residual | Piecewise-constant and axis-aligned: the response is built from thresholds and interactions, not smooth curvature |
+| **Neural network (MLP)** | dense feed-forward, two hidden layers (64, 32), ReLU | A smooth, continuously differentiable surface with no axis alignment, given scaled inputs and enough rows |
+
+Both get **the same preprocessing and the same folds** as the baselines — anything else measures
+the features or the split instead of the architecture.
+
+| Model | Kind | Spearman ρ | Decile MAPE | MAE ($) | R² (log) |
+|---|---|---|---|---|---|
+| ridge on log(y) | baseline | **0.9929** | 0.0196 | 75.03 | 0.9866 |
+| linear regression on log(y) | baseline | 0.9929 | **0.0191** | 75.13 | 0.9866 |
+| **gradient boosting** | advanced | 0.9848 | 0.0293 | 120.13 | 0.9643 |
+| k-NN (k=10) | baseline | 0.9693 | 0.0883 | 165.70 | 0.9206 |
+| **neural network (MLP)** | advanced | 0.9307 | 0.1691 | 198.78 | 0.6764 |
+| heuristic (purchases × AOV) | naive | 0.8771 | 0.8100 | 800.24 | −3.02 |
+| decision tree (depth 3) | baseline | 0.6984 | 0.0551 | 355.80 | 0.5592 |
+
+**The paired comparison**, against the strongest *model* baseline on the same folds:
+
+| Model | Reference | delta | delta sd | Folds won | p (corrected) | Fit-time ratio |
+|---|---|---|---|---|---|---|
+| gradient boosting | ridge on log(y) | **−0.0088** | 0.0023 | 0 of 5 | **0.0070** | 3.5× |
+| neural network (MLP) | ridge on log(y) | −0.0488 | 0.0416 | 0 of 5 | 0.1932 | 5.3× |
+
+> **Verdict.** No advanced architecture beat ridge on log(y) at their default settings: the best
+> of them (gradient boosting) is 0.0088 behind, and the gap is significant (corrected paired
+> t-test p = 0.0070), at 3.5× the fit time. Keep the baseline.
+
+**And with the challengers tuned** (`python main.py --tune-advanced`), a bounded randomised search
+of 10 draws each, scored on Spearman itself:
+
+| Model | delta | delta sd | Folds won | p (corrected) | Fit-time ratio |
+|---|---|---|---|---|---|
+| gradient boosting | **−0.0076** | 0.0005 | 0 of 5 | **0.0000** | 16.2× |
+| neural network (MLP) | −0.0427 | 0.0472 | 0 of 5 | 0.2944 | 33.6× |
+
+Tuning closes the gap from 0.0088 to 0.0076 and makes the loss *more* certain, not less: the
+fold-to-fold spread collapses to 0.0005, so the search bought consistency rather than accuracy.
+
+**This is the capstone's central finding, arrived at a second way.** §15.5 reaches it through the
+candidate zoo; here it falls out of a paired test: gradient boosting loses in **all five folds**,
+tuned or not, and the corrected t-test puts that beyond fold noise. A target that is a smooth
+product of powers is exactly what axis-aligned steps cannot represent and what a linear model on
+logged features represents *exactly*. The MLP, which can bend smoothly, still loses because it has
+to *learn* the shape that the log transform hands the linear model for free.
+
+The verdict names the regime — "at their default settings" or "after a randomised search" — so
+"keep the baseline" can never be read as a claim about untuned challengers when it is not.
+
+Two methodological points the comparison is built around:
+
+* **A corrected significance test, not a rule of thumb.** Cross-validation folds share training
+  rows, so their differences are correlated and a plain paired t-test is anti-conservative — it
+  reports fold noise as significance. The comparison uses the **corrected resampled t-test**
+  (Nadeau & Bengio), which inflates the variance by `1/k + 1/(k−1)` first. Wilcoxon's p-value is
+  reported beside it with the caveat that at five folds it cannot go below 0.0625 whatever the
+  data does, so it is never the thing a claim rests on.
+* **Paired, not parallel.** Two cross-validated means are two numbers. The comparison keeps the
+  per-fold score for every model and differences them on the *same* folds, so `delta_sd` measures
+  the disagreement between folds and `reliable` asks whether the gap exceeds it — in either
+  direction, since "reliably worse" is also a result.
+* **Pooled and within-fold ranking can disagree.** `score` pools every out-of-fold prediction and
+  ranks all 800 customers together (the deployment question); `fold_mean` ranks within each fold
+  and averages (the paired-test question). When they point different ways the analysis says so
+  rather than quietly picking the flattering one.
+
+The run writes `outputs/advanced_models_report.md` — the architectures, every model on one
+leaderboard, the paired table, the cost, the fold-level spread and the checks, generated entirely
+from the numbers of that run. `python main.py --architectures` prints what each model assumes.
+
+### 15.4 Optimization — folds, search, fit diagnosis and the final choice
+
+`src/model_optimization.py` owns cross-validation and hyperparameter tuning for **every** model in
+the project, baselines and challengers alike. That matters more than it sounds: a protocol applied
+to only half the field cannot be used to choose between the halves.
+
+**1. Cross-validation setup.** The default for regression is not plain K-fold. With skew 6.4 and
+38% of value in the top decile (§15.1), fold composition is itself random, so the fold-to-fold
+spread ends up measuring the split. Folds are therefore stratified on value **deciles** — the same
+trick the train/test split uses:
+
+| Fold | Train rows | Val rows | Median | Top-decile share |
+|---|---|---|---|---|
+| 1 | 640 | 160 | 536.3 | 0.345 |
+| 2 | 640 | 160 | 536.4 | 0.443 |
+| 3 | 640 | 160 | 531.2 | 0.303 |
+| 4 | 640 | 160 | 529.7 | 0.379 |
+| 5 | 640 | 160 | 538.8 | 0.368 |
+
+`--cv-strategy` also offers `kfold`, `repeated`, `shuffle` and `timeseries` — the last for the day
+this project moves to transactional data, where a temporal split is the only valid one (§7.1).
+
+**2. Hyperparameter tuning.** One registry, five tunable models here, three search methods
+(`random`, `grid`, `halving`), scored on **the headline metric itself**. The gradient-boosting row
+below is XGBoost; without that optional dependency the same architecture runs as scikit-learn's
+`HistGradientBoosting`, which changes the row's numbers and the parameter names (the tuner
+translates and reports both) but not the conclusion:
+
+| Model | Best CV Spearman | ± SE | What the search chose |
+|---|---|---|---|
+| ridge on log(y) | **0.9925** | 0.0006 | `alpha = 17.7` |
+| gradient boosting | 0.9857 | 0.0010 | 666 trees, depth 3, lr 0.077 |
+| k-NN | 0.9714 | 0.0032 | k = 13, distance-weighted |
+| neural network (MLP) | 0.9676 | 0.0110 | (128, 64), alpha 0.076 |
+| decision tree | 0.9388 | 0.0028 | depth 8, min leaf 4 |
+
+**3. Over- and underfitting.** Every model's training score is compared with its cross-validated
+one, and the gap is named rather than ignored:
+
+| Model | Train | CV | Gap | Verdict |
+|---|---|---|---|---|
+| linear regression on log(y) | 0.9931 | 0.9929 | 0.0001 | balanced |
+| ridge on log(y) | 0.9932 | 0.9930 | 0.0002 | balanced |
+| gradient boosting | 0.9969 | 0.9854 | 0.0115 | balanced |
+| k-NN (k=10) | 1.0000 | 0.9722 | 0.0278 | balanced |
+| **neural network (MLP)** | 0.9964 | 0.9351 | **0.0613** | **overfitting** |
+| mean, median | n/a | <0 | — | underfitting |
+
+Each verdict carries the action it implies — *reduce effective capacity* for the MLP, *add
+capacity* for the naive floors — and on this project "add capacity" means a better representation,
+not a bigger estimator (§16.2). Note that k-NN scores a **perfect 1.0000 on its own training rows**
+and 0.9722 out of fold: memorisation that the training score alone would have hidden completely.
+
+**4. Selection and validation.** The **one-standard-error rule** decides: among models whose score
+is within one standard error of the best, take the *simplest*.
+
+```
+best by score:  ridge on log(y)              0.9925 ± 0.0006
+within 1 SE:    linear regression on log(y), ridge on log(y)
+chosen:         linear regression on log(y), trading +0.0002 for a simpler model
+```
+
+Ridge is nominally ahead; plain least squares on the same logged features is inside its standard
+error and has one fewer knob, so it wins. That is the rule doing exactly what it exists for —
+refusing to spend complexity on a difference that is not evidence.
+
+Then one look at the held-out split:
+
+> linear regression on log(y): cross-validated 0.9923, held-out 0.9917 (**optimism +0.0006**).
+> The selection did not overfit the folds.
+
+**Optimism is the number to read**, not the test score. Tuning and selection both consumed the
+folds, so a large positive gap would mean the choice was fitted to them — the failure that survives
+clean preprocessing, honest folds and a paired test. At +0.0006 there is nothing there.
+
+### 15.5 Model selection — 5-fold CV on the training split
 
 | Model | Spearman ρ | Norm. Gini | Decile MAPE | MAE ($) | R² (log) |
 |---|---|---|---|---|---|
@@ -821,7 +1101,7 @@ Three things to read off it:
 * **The heuristic baseline is the bar, not the mean.** `purchases × AOV` already ranks at
   ρ = 0.88 (§7.3); a model that only beat the mean would prove nothing.
 
-### 15.4 Tuning the finalists
+### 15.6 Tuning the finalists
 
 `RandomizedSearchCV`, optimising R² on `log(value)` over the same folds.
 
@@ -833,7 +1113,7 @@ Three things to read off it:
 
 Extra capacity cannot buy back the wrong representation.
 
-### 15.5 Final model — held-out test split, opened once
+### 15.7 Final model — held-out test split, opened once
 
 **Degree-3 polynomial on logged features + Ridge (α ≈ 0.0019).**
 
@@ -849,7 +1129,7 @@ generating function has been recovered almost exactly. **That is the sentence th
 with the number**: ASOS's production 12-month model reports Spearman 0.56 (§4.2), and the gap
 between 0.56 and 1.000 is the gap between forecasting behaviour and recovering a formula.
 
-### 15.6 What drives value
+### 15.8 What drives value
 
 Drop-column importance — refit the whole pipeline without a column, measure the loss in CV R²
 (full-model CV R² = 0.999403):
@@ -869,7 +1149,7 @@ polynomial invents feature combinations that never occur, and the fitted surface
 wildly there. **With a high-degree model, prefer refit-based importance.** The pipeline computes
 both so the disagreement stays visible.
 
-### 15.7 Customer tiers — the operational output
+### 15.9 Customer tiers — the operational output
 
 Tiers are cut from *predictions*; the value shown is what those customers *actually* held, so the
 table doubles as a fair test of the ranking.
@@ -881,7 +1161,7 @@ table doubles as a fair test of the ranking.
 | Growth (50–80%) | 60 | $761 | 25.9% |
 | Standard (bottom 50%) | 100 | $305 | 17.3% |
 
-Retention budget and service level follow the tier; §15.6 says which lever to pull inside a tier
+Retention budget and service level follow the tier; §15.8 says which lever to pull inside a tier
 (basket size first, lapse prevention second).
 
 ---
@@ -894,10 +1174,10 @@ Retention budget and service level follow the tier; §15.6 says which lever to p
 |---|---|---|---|
 | `total_purchase_count` | Skew 10.8; 988 non-integer, 143 below 1 | Positivity floor → log → polynomial | Multiplicative in the target (EDA §7); the floor keeps `log()` finite for sub-1 counts. Counts are **not** rounded: rounding would edit the input that produced the label. |
 | `average_order_value` | Skew 3.1 | log → polynomial | The dominant driver, elasticity 0.86. |
-| `days_since_first_purchase` | Skew 1.2 | log → polynomial | Near-zero on its own, real through interactions (§15.6). |
+| `days_since_first_purchase` | Skew 1.2 | log → polynomial | Near-zero on its own, real through interactions (§15.8). |
 | `days_since_last_purchase` | Skew 1.5; 52 rows exceed the first-purchase date | log → polynomial, **plus** `flag_invalid_recency` | The impossible rows are evidence about the generator, not errors: flagged, value left intact. |
 | `product_category_diversity` | Skew 0.6 | log → polynomial | Marginal but kept; removing it costs a little. |
-| `loyalty_program_membership` | Categorical, 40% enrolled | Mapped to 0/1 | Contributes nothing (§15.6), kept because the negative result is part of the finding (EDA §5). |
+| `loyalty_program_membership` | Categorical, 40% enrolled | Mapped to 0/1 | Contributes nothing (§15.8), kept because the negative result is part of the finding (EDA §5). |
 | `estimated_lifetime_value` (target) | Skew 6.4, no zeros | `log()` for fitting, Duan smearing on the way back | Symmetric in logs; `exp(E[log y])` would under-state the level. |
 | All numerics | Heavy right tail | Clip to the training min/max **widened by 50%** | An extrapolation guard for unseen data, not tail removal: at these bounds no training row moves. |
 
@@ -1026,7 +1306,7 @@ ways to publish an inflated score, and it is structurally impossible here.
 * **Monitoring.** Log the share of scored rows hitting a clip bound, the predicted-value
   distribution against training, and — once labels arrive — decile MAPE and Spearman on a
   holdout. Rank metrics and calibration metrics fail independently and both need watching.
-* **Interpretability.** Elasticities from the first-order model (§15.6) are the explanation a
+* **Interpretability.** Elasticities from the first-order model (§15.8) are the explanation a
   business will act on. Permutation importance is *not* safe on this model; drop-column
   importance is, and it is what the pipeline reports first.
 

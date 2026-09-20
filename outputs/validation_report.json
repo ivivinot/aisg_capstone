@@ -1,0 +1,339 @@
+{
+  "total": 55,
+  "passed": 52,
+  "failed": 0,
+  "skipped": 3,
+  "failures": [],
+  "checks": [
+    {
+      "group": "output contract",
+      "name": "column parity between splits",
+      "status": "PASS",
+      "detail": "119 features"
+    },
+    {
+      "group": "output contract",
+      "name": "row parity with targets",
+      "status": "PASS",
+      "detail": "train 800, test 200"
+    },
+    {
+      "group": "output contract",
+      "name": "no missing values after imputation",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "group": "output contract",
+      "name": "all values finite (no -inf from log)",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "group": "output contract",
+      "name": "no constant columns",
+      "status": "PASS",
+      "detail": "0 constant"
+    },
+    {
+      "group": "output contract",
+      "name": "train features standardised",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "group": "output contract",
+      "name": "test features not re-standardised (no leakage)",
+      "status": "PASS",
+      "detail": "test mean in [-0.112, +0.094]"
+    },
+    {
+      "group": "output contract",
+      "name": "target strictly positive (log is defined)",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "group": "transformer behaviour",
+      "name": "single row == batch",
+      "status": "PASS",
+      "detail": "25 rows scored individually"
+    },
+    {
+      "group": "transformer behaviour",
+      "name": "row order permutes output identically",
+      "status": "PASS",
+      "detail": ""
+    },
+    {
+      "group": "transformer behaviour",
+      "name": "input index is preserved",
+      "status": "PASS",
+      "detail": "non-default index"
+    },
+    {
+      "group": "transformer behaviour",
+      "name": "column order does not matter",
+      "status": "PASS",
+      "detail": "columns reversed"
+    },
+    {
+      "group": "transformer behaviour",
+      "name": "unknown columns are ignored",
+      "status": "PASS",
+      "detail": "2 unknown columns ignored"
+    },
+    {
+      "group": "transformer behaviour",
+      "name": "a missing feature raises ValueError",
+      "status": "PASS",
+      "detail": "ValueError names total_purchase_count"
+    },
+    {
+      "group": "transformer behaviour",
+      "name": "unseen category degrades to a finite row",
+      "status": "PASS",
+      "detail": "unseen category -> finite output"
+    },
+    {
+      "group": "transformer behaviour",
+      "name": "missing values at transform time are imputed",
+      "status": "PASS",
+      "detail": "NaNs filled with training medians"
+    },
+    {
+      "group": "transformer behaviour",
+      "name": "non-positive values survive the log floor",
+      "status": "PASS",
+      "detail": "0 and -5 in total_purchase_count stay finite through log()"
+    },
+    {
+      "group": "transformer behaviour",
+      "name": "extreme values are clipped to the fitted bound",
+      "status": "PASS",
+      "detail": "total_purchase_count = 1e9 lands on the fitted bound 1,266.3"
+    },
+    {
+      "group": "transformer behaviour",
+      "name": "save/load reproduces the transform",
+      "status": "PASS",
+      "detail": "joblib round-trip"
+    },
+    {
+      "group": "transformer behaviour",
+      "name": "clone/set_params rebuilds the same pipeline",
+      "status": "PASS",
+      "detail": "clone + set_params(config=...)"
+    },
+    {
+      "group": "feature engineering",
+      "name": "derived features created",
+      "status": "SKIP",
+      "detail": "no derived features requested"
+    },
+    {
+      "group": "feature engineering",
+      "name": "derived features are finite and positive",
+      "status": "SKIP",
+      "detail": "no derived features requested"
+    },
+    {
+      "group": "feature engineering",
+      "name": "the catalogue's log-space classification is correct",
+      "status": "SKIP",
+      "detail": "needs derived features and the log transform"
+    },
+    {
+      "group": "feature engineering",
+      "name": "selection is a subset of its input",
+      "status": "PASS",
+      "detail": "variance: kept 119 of 119"
+    },
+    {
+      "group": "feature engineering",
+      "name": "selection is deterministic",
+      "status": "PASS",
+      "detail": "refitting on the same rows selects the same columns"
+    },
+    {
+      "group": "feature engineering",
+      "name": "selection applies unchanged to unseen rows",
+      "status": "PASS",
+      "detail": "119 columns on test rows"
+    },
+    {
+      "group": "feature engineering",
+      "name": "output width matches the fitted feature names",
+      "status": "PASS",
+      "detail": "119 features"
+    },
+    {
+      "group": "statistical validation",
+      "name": "degree 1 -> 7 features",
+      "status": "PASS",
+      "detail": "got 7"
+    },
+    {
+      "group": "statistical validation",
+      "name": "degree 2 -> 35 features",
+      "status": "PASS",
+      "detail": "got 35"
+    },
+    {
+      "group": "statistical validation",
+      "name": "degree 3 -> 119 features",
+      "status": "PASS",
+      "detail": "got 119"
+    },
+    {
+      "group": "statistical validation",
+      "name": "CV R2 on log(value) = 0.99936 +/- 0.0005",
+      "status": "PASS",
+      "detail": "got 0.99936"
+    },
+    {
+      "group": "statistical validation",
+      "name": "shuffled-target CV R2 < 0.05",
+      "status": "PASS",
+      "detail": "got -0.37375 -- above zero would mean y reached the features"
+    },
+    {
+      "group": "baseline models",
+      "name": "every baseline produced a score",
+      "status": "PASS",
+      "detail": "8 baselines, headline metric spearman"
+    },
+    {
+      "group": "baseline models",
+      "name": "predictions are finite",
+      "status": "PASS",
+      "detail": "8 prediction sets checked"
+    },
+    {
+      "group": "baseline models",
+      "name": "one prediction per row",
+      "status": "PASS",
+      "detail": "all 800 rows predicted"
+    },
+    {
+      "group": "baseline models",
+      "name": "the mean baseline scores R2 ~ 0",
+      "status": "PASS",
+      "detail": "got -0.0026 out-of-fold"
+    },
+    {
+      "group": "baseline models",
+      "name": "at least one model baseline beats the strongest naive one",
+      "status": "PASS",
+      "detail": "4 of 5 beat heuristic (product of two columns) (spearman 0.8771)"
+    },
+    {
+      "group": "baseline models",
+      "name": "benchmark covers every baseline",
+      "status": "PASS",
+      "detail": "8 timed"
+    },
+    {
+      "group": "advanced models",
+      "name": "both advanced architectures ran",
+      "status": "PASS",
+      "detail": "['gradient boosting', 'neural network (MLP)']"
+    },
+    {
+      "group": "advanced models",
+      "name": "predictions are finite",
+      "status": "PASS",
+      "detail": "2 prediction sets checked"
+    },
+    {
+      "group": "advanced models",
+      "name": "every model has a score for each fold",
+      "status": "PASS",
+      "detail": "{'gradient boosting': 5, 'neural network (MLP)': 5}"
+    },
+    {
+      "group": "advanced models",
+      "name": "the reference is a model baseline, not a naive one",
+      "status": "PASS",
+      "detail": "compared against ridge on log(y)"
+    },
+    {
+      "group": "advanced models",
+      "name": "the paired difference is consistent with the leaderboard",
+      "status": "PASS",
+      "detail": "delta -0.0297 = fold mean - reference fold mean"
+    },
+    {
+      "group": "advanced models",
+      "name": "every advanced model beats the naive floor",
+      "status": "PASS",
+      "detail": "floor 0.8771, worst advanced 0.9307"
+    },
+    {
+      "group": "advanced models",
+      "name": "the comparison carries a significance test",
+      "status": "PASS",
+      "detail": "corrected paired t-test p = 0.0411 (significant)"
+    },
+    {
+      "group": "advanced models",
+      "name": "the verdict states the cost as well as the gain",
+      "status": "PASS",
+      "detail": "No advanced architecture beat ridge on log(y) at their default setting..."
+    },
+    {
+      "group": "model optimization",
+      "name": "a cross-validation scheme was chosen",
+      "status": "PASS",
+      "detail": "DecileStratifiedKFold(n_splits=5, n_bins=10, random_state=42)"
+    },
+    {
+      "group": "model optimization",
+      "name": "folds are the same size to within one row",
+      "status": "PASS",
+      "detail": "5 folds of 160-160 rows"
+    },
+    {
+      "group": "model optimization",
+      "name": "stratification balanced the tail across folds",
+      "status": "PASS",
+      "detail": "top-decile share varies by 0.140 between folds"
+    },
+    {
+      "group": "model optimization",
+      "name": "every tunable model was searched",
+      "status": "PASS",
+      "detail": "5 of 10 models had a space"
+    },
+    {
+      "group": "model optimization",
+      "name": "search scores are finite where a search ran",
+      "status": "PASS",
+      "detail": "5 searches"
+    },
+    {
+      "group": "model optimization",
+      "name": "the final model is not diagnosed as overfitting",
+      "status": "PASS",
+      "detail": "1 of 10 models overfit; chosen model is balanced"
+    },
+    {
+      "group": "model optimization",
+      "name": "selection used the one-standard-error rule",
+      "status": "PASS",
+      "detail": "2 model(s) within 1 SE; chose linear regression on log(y)"
+    },
+    {
+      "group": "model optimization",
+      "name": "the simpler choice cost little accuracy",
+      "status": "PASS",
+      "detail": "traded +0.0002 for a simpler model"
+    },
+    {
+      "group": "model optimization",
+      "name": "the held-out score is close to the cross-validated one",
+      "status": "PASS",
+      "detail": "optimism +0.0006 (spearman), tolerance 0.0500"
+    }
+  ]
+}

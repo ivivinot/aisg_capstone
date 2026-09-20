@@ -1,0 +1,11 @@
+model,train_score,cv_score,gap,relative_gap,verdict,action
+mean,,-0.04113997831831821,,,underfitting,"add capacity -- on this project a better representation (log, expansion) beats a bigger estimator"
+median,,-0.07578497634021947,,,underfitting,"add capacity -- on this project a better representation (log, expansion) beats a bigger estimator"
+heuristic (product of two columns),0.8781259800186327,0.8771377948692631,0.0009881851493696026,0.0011253341455045374,balanced,nothing to fix; the gap is small and the score is high
+linear regression,0.970613793583433,0.9675324723265094,0.0030813212569236192,0.003174611032002351,balanced,nothing to fix; the gap is small and the score is high
+linear regression on log(y),0.9930599109497819,0.9929104732145343,0.00014943773524755954,0.0001504820943830412,balanced,nothing to fix; the gap is small and the score is high
+ridge on log(y),0.9932263057429738,0.9930368952885502,0.0001894104544235553,0.00019070221290793196,balanced,nothing to fix; the gap is small and the score is high
+decision tree (depth 3),0.9769641797258979,0.9402848504627717,0.036679329263126226,0.037544190487533706,balanced,nothing to fix; the gap is small and the score is high
+k-NN (k=10),1.0,0.9722270226855085,0.027772977314491465,0.027772977314491465,balanced,nothing to fix; the gap is small and the score is high
+gradient boosting,0.987950521411689,0.9739109147383976,0.014039606673291405,0.014210839884197964,balanced,nothing to fix; the gap is small and the score is high
+neural network (MLP),0.9964173615476436,0.9351181947368459,0.06129916681079772,0.06151956918493206,overfitting,"reduce effective capacity: stronger regularisation, fewer features, or take the simplest model within one standard error"
